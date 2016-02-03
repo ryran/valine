@@ -60,7 +60,7 @@ _valine()  {
     
     # Check previous arg to see if we need to do anything special
     case "${prev}" in
-        valine)
+        v|valine)
             COMPREPLY=( $(compgen -W "-a --all $(__v_get_domains)" -- "${curr}") )
             ;;
         --help|-h|--size|start|s|shutdown|h|destroy|d|console|c|NUKE|K)

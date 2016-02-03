@@ -227,7 +227,7 @@ ${BOLD}Managing ALL domains at once with ${pzero}:${RESET}
  └──────────────────────────────────────────────────────────────────────────────
  
 ${BOLD}Version info: ${version:2}${RESET}
-  See <http://github.com/ryran/b19scripts> to report bugs or suggestions"
+  See <http://github.com/ryran/valine> to report bugs or suggestions"
 }
 
 get_primary_storage_source() {
