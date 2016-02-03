@@ -1,0 +1,1025 @@
+#!/bin/bash
+# valine v0.6.3 last mod 2016/02/03
+# Latest version at <https://github.com/ryran/valine>
+# Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+#    General Public License <gnu.org/licenses/gpl.html> for more details.
+#
+#-------------------------------------------------------------------------------
+
+# Program name
+pzero=valine
+
+# Get version from line #2
+version=$(sed '2q;d' ${0})
+
+# Colors
+# FIXME: This is nonsense and simply due to poor planning (wasn't originally going to use colors so much)
+BOLD='\033[1;1m'  ; B() { printf ${BOLD}; }
+RESET='\033[0;0m' ; R() { printf ${RESET}; }
+r='\033[0;31m'    ; r() { printf ${r}; }
+g='\033[0;32m'    ; g() { printf ${g}; }
+G='\033[1;32m'    ; G() { printf ${G}; }
+b='\033[1;34m'
+B='\033[1;34m'
+o='\033[0;33m'
+O='\033[1;33m'    ; O() { printf ${O}; }
+p='\033[0;35m'
+P='\033[1;35m'    ; P() { printf ${P}; }
+c='\033[0;36m'    ; c() { printf ${c}; }
+C='\033[1;36m'    ; C() { printf ${C}; }
+Z() { printf ${b}; }
+
+# Some global variables
+skipPrompts=false
+allDomains=false
+startDomains=true
+nonthinSnapshotLvDefaultSize=2G
+XML=
+lvmCfgfileVersion='0Sifr'
+lvmCfgfileColumnNames='ID❚LV❚VG❚Origin❚ThinPool❚Date❚Time'
+numTimesTrapTriggered=0
+# GNU getopt short and long options
+sOpts='ahL:'
+lOpts='all,off,help,size:'
+
+Print() {
+    if [[ -n ${2} ]]; then
+        ${2}
+        echo -e "${1}${RESET}"
+    else
+        echo -e "${BOLD}${1}${RESET}"
+    fi
+}
+
+Prompt() {
+    local REPLY
+    if [[ ${skipPrompts} == true ]]; then
+        echo "${@} [y/n] y"
+    else
+        read -p "${@} [y/n] "
+        [[ ${REPLY} == y ]]
+        return
+    fi
+}
+
+wait_for_domid_turn_to_dash() {
+    local count=0
+    [[ ${parallelize} == false ]] && local printProgress="printf ."
+    until [[ $(virsh domid ${1}) == - ]]; do
+        ((count++))
+        sleep .5
+        ${printProgress}
+        case ${count} in
+            8)   echo; echo -e "      ${Domain}: Waiting for domain to turn off" ;;
+            30)  echo; echo -e "      ${Domain}: Domain has not yet turned off (still waiting)" ;;
+            120) echo; echo -e "      ${Domain}: Domain has not yet turned off\n        Consider manual intervention on the domain's serial or physical console" ;;
+            340) echo; echo -e "      ${Domain}: Domain still has not turned off\n        Manual intervention on the console is probably required\n        No more warnings will be printed" ;;
+        esac
+    done
+}
+
+wait_for_shutdown() {
+    if [[ $(virsh domid ${1}) == - ]]; then
+        echo "  Already off"
+        return
+    fi
+    if [[ ${parallelize} == true ]]; then
+        virsh shutdown ${1} &>/dev/null
+        wait_for_domid_turn_to_dash ${1}
+    else
+        echo "  Shutting down domain"
+        virsh shutdown ${1} &>/dev/null
+        printf "    Waiting for domain to shut down gracefully ..."
+        wait_for_domid_turn_to_dash ${1}
+    fi
+    echo
+}
+
+wait_for_destroy() {
+    if [[ $(virsh domid ${1}) == - ]]; then
+        echo "  Already off"
+        return
+    fi
+    if [[ ${parallelize} == true ]]; then
+        virsh destroy ${1} &>/dev/null
+        wait_for_domid_turn_to_dash ${1}
+    else
+        echo "  Forcefully terminating domain"
+        virsh destroy ${1} &>/dev/null
+        printf "    Waiting for domain to terminate ..."
+        wait_for_domid_turn_to_dash ${1}
+    fi
+    echo
+}
+
+show_usage() {
+    echo -e "${BOLD}Usage: ${pzero}
+       ${pzero} DOMAIN
+       ${pzero} DOMAIN new-snap [SNAP] [--off] [--size LVSIZE]
+       ${pzero} DOMAIN revert-snap [SNAP] [--off]
+       ${pzero} DOMAIN Delete-snap SNAP
+       ${pzero} DOMAIN {start|shutdown|destroy|console|NUKE}
+       ${pzero} --all {new-snap|revert-snap|start|shutdown|destroy}${RESET}"
+    [[ ${1} == +note ]] && echo -e "\nRun ${pzero} --help for full help page"
+}
+
+show_help() {
+    show_usage
+    echo -e "
+Easy qcow & LVM snapshot management with intelligent tab-completion
+
+${BOLD}With no arguments:${RESET}
+ ┐
+ │${BOLD}${pzero}${RESET} by itself displays summary of all domains & their storage
+ │${BOLD}${pzero} DOMAIN${RESET} with no other args shows details about a particular domain
+ └──────────────────────────────────────────────────────────────────────────────
+
+${BOLD}Snapshotting with ${pzero}:${RESET}
+ ┐
+ │${BOLD}${pzero} DOMAIN {n|new-snap} [SNAP] [--off] [--size LVSIZE]${RESET}   (NO confirmation)
+ │  • If provided, SNAP will be the name of the new snapshot
+ │     • Otherwise, name will be auto-generated
+ │  • Wait for DOMAIN to shut down
+ │  • Determine storage type
+ │  • If QCOW2 storage:
+ │      • Create new embedded snapshot w/ virsh snapshot-create-as
+ │        (Doing this more than once always leads to nested snapshots)
+ │  • If LVM storage:
+ │      • Check if current storage LV is thin-provisioned
+ │          • If so, create a new thin LV snapshot from it (no size needed)
+ │          • If not, size will be LVSIZE (default 2GiB) and
+ │              • Check if current storage LV is a snapshot
+ │                  • If so, create a new snapshot of its origin
+ │                  • If not, create a new snapshot of it
+ │      • Redfine DOMAIN xml to use the newly-created snapshot
+ │      • Add new snapshot to cfgfile in /etc/${pzero}/
+ │  • If not --off:
+ │      • Starts DOMAIN with new snapshot
+ │
+ │${BOLD}${pzero} DOMAIN {r|revert-snap} [--off]${RESET}                       (NO confirmation)
+ │  • Wait for DOMAIN to be destroyed
+ │  • If QCOW2 storage:
+ │      • Revert current snapshot to original pristine state using
+ │          virsh snapshot-revert DOMAIN --current
+ │  • If LVM storage:
+ │      • Remove current snapshot LV (lvremove) & recreate it from its origin
+ │      • Update creation date/time of snapshot in cfgfile (/etc/${pzero}/)
+ │  • If not --off:
+ │      • Starts DOMAIN with new snapshot
+ │
+ │${BOLD}${pzero} DOMAIN {r|revert-snap} SNAP [--off]${RESET}                  (NO confirmation)
+ │  • If QCOW2 storage, SNAP should be an embedded snapshot name:
+ │      • Wait for DOMAIN to be destroyed
+ │      • Revert SNAP to original pristine state and set it as current, using
+ │          virsh snapshot-revert DOMAIN SNAP
+ │  • If LVM storage, SNAP should be the LV name [only] of an LVM logvol:
+ │      • Prompt for whether to shut down or destroy DOMAIN
+ │      • Find SNAP in /etc/${pzero}/DOMAIN & confirm it's available with lvs
+ │      • Edit 'source dev' definition in DOMAIN xml to point to SNAP, 
+ │        whether it's a snapshot or a normal LVM logvol, using
+ │            virsh dumpxml; sed; virsh undefine; virsh define
+ │  • If not --off:
+ │      • Starts DOMAIN with fresh snapshot or different LVM storage
+ │
+ │${BOLD}${pzero} DOMAIN {D|Delete-snap} SNAP${RESET}                         (YES confirmation)
+ │  • If QCOW2 storage, SNAP should be an embedded snapshot name:
+ │      • Check if SNAP is the current snapshot
+ │          • If so, give warning deleting current SNAP is not recommended
+ │      • Delete SNAP using: virsh snapshot-delete DOMAIN SNAP
+ │  • If LVM storage, SNAP should be the LV name [only] of an LVM logvol:
+ │      • Abort with warning if SNAP is the current storage
+ │      • Remove current snapshot LV (lvremove) & remove it from cfgfile
+ │
+ │For more on managing snapshots with virsh:
+ │    Virtualization Deployment & Administration Guide @ http://red.ht/1kwfbJs 
+ └──────────────────────────────────────────────────────────────────────────────
+
+${BOLD}Starting/stopping/accessing/deleting domains with ${pzero}:${RESET}
+ ┐
+ │${BOLD}${pzero} DOMAIN {s|start} | {h|shutdown} | {d|destroy} | {c|console} | {K|NUKE}${RESET}
+ │
+ │start, shutdown, destroy, console commands are available as a convenience due
+ │to virsh's lack of intelligent BASH tab-completion
+ │The NUKE command is equivalent to running:
+ │  virsh destroy DOMAIN
+ │  virsh undefine --snapshots-metadata --remove-all-storage DOMAIN
+ └──────────────────────────────────────────────────────────────────────────────
+
+${BOLD}Managing ALL domains at once with ${pzero}:${RESET}
+ ┐  
+ │${BOLD}${pzero} --all [ {n|new-snap} | {r|revert-snap} | {s|start} |
+ │               {h|shutdown} | {d|destroy} ]${RESET}
+ │
+ │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
+ │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
+ │requires double Ctrl-c)
+ │Note: Does not work with console or Delete or NUKE commands
+ │As above, the --off switch is optional with new-snap and revert-snap
+ └──────────────────────────────────────────────────────────────────────────────
+ 
+${BOLD}Version info: ${version:2}${RESET}
+  See <http://github.com/ryran/b19scripts> to report bugs or suggestions"
+}
+
+get_primary_storage_source() {
+    primaryStorageSourceXmlLine=$(virsh dumpxml --inactive "${Domain}" | egrep "<source (file|dev)=" | head -1)
+    primaryStorage=$(cut -d\' -f2 2>/dev/null <<<"${primaryStorageSourceXmlLine}")
+}
+
+test_primaryStorage_is_lvm() {
+    if ! sudo -l lvm; then
+        Print "Error: Not root and this user doesn't have required sudo access to 'lvm' command"
+        Print "Consdier running as root:"
+        Print "  echo '$USER ALL=(ALL) NOPASSWD: /usr/sbin/lvm' >>/etc/sudoers.d/$USER-lvm"
+        exit 77
+    fi
+    local lvPath
+    if lvPath=$(sudo lvm lvs --noheadings -o lv_path "${primaryStorage}" 2>/dev/null | tr -d ' '); then
+        primaryStorage=${lvPath}
+        return 0
+    else
+        return 1
+    fi
+}
+
+domain_cfgfile_create() {
+    [[ -d ${cfgFile##*/} ]] || mkdir -p ${cfgFile##*/}
+    cat >${cfgFile} <<EOF
+# Domain:     ${Domain}
+# CfgVersion: ${lvmCfgfileVersion}
+# Columns:    ${lvmCfgfileColumnNames}
+
+EOF
+}
+
+domain_cfgfile_eval() {
+    if [[ $(awk '/^# CfgVersion:/ {print $3}' ${cfgFile}) != ${lvmCfgfileVersion} ]]; then
+        Print "Warning: ${Domain} config file has improper CfgVersion ('${lvmCfgfileVersion}' expected)" r
+        Print "Storage displayed for this domain might not be accurate" r
+        Print "If this causes problems, delete ${cfgFile}" r
+        return 64
+    fi >&2
+    # Set global variable containing current storage's LVM VG name
+    lvmVolgroup=$(get_lv_attribute VG of LV=${primaryStorage##*/})
+}
+
+domain_cfgfile_add_lvm_snap() {
+    echo "${ID}❚${LV}❚${VG}❚${Origin}❚${ThinPool}❚${Date}❚${Time}" >>${cfgFile}
+}
+
+chase_add_preexisting_logvols() {
+    local id=0 logvol=${1} LVM2_VG_NAME LVM2_LV_NAME LVM2_LV_PATH LVM2_ORIGIN=0 LVM2_POOL_LV 
+    while [[ -n ${LVM2_ORIGIN} ]]; do
+        eval $(sudo lvm lvs --nameprefixes --noheadings -o vg_name,lv_name,lv_path,origin,pool_lv ${logvol})
+        ID=${id} LV=${LVM2_LV_NAME} VG=${LVM2_VG_NAME} Origin=${LVM2_ORIGIN} \
+            ThinPool=${LVM2_POOL_LV} Date=unknown Time=unknown \
+            domain_cfgfile_add_lvm_snap
+        ((id++))
+        siblings=$(sudo lvm lvs --noheadings -o vg_name,origin,lv_name ${LVM2_VG_NAME} 2>/dev/null | 
+                       awk -v vg="${LVM2_VG_NAME}" -v origin="${LVM2_ORIGIN}" -v lv=${LVM2_LV_NAME} '
+                           $1 == vg && $2 == origin && $3 != lv {print $3}'
+                 )
+        for logvol in ${siblings}; do
+            eval $(sudo lvm lvs --nameprefixes --noheadings -o vg_name,lv_name,lv_path,origin,pool_lv ${LVM2_VG_NAME}/${logvol})
+            ID=${id} LV=${LVM2_LV_NAME} VG=${LVM2_VG_NAME} Origin=${LVM2_ORIGIN} \
+                ThinPool=${LVM2_POOL_LV} Date=unknown Time=unknown \
+                domain_cfgfile_add_lvm_snap
+            ((id++))
+        done
+        logvol=${LVM2_VG_NAME}/${LVM2_ORIGIN}
+    done
+}
+
+read_lvm_config() {
+    cfgFile=/etc/${pzero}/${Domain}
+    if [[ -r ${cfgFile} ]]; then
+        domain_cfgfile_eval
+    else
+        domain_cfgfile_create
+        chase_add_preexisting_logvols ${primaryStorage}
+        domain_cfgfile_eval
+    fi
+}
+
+test_primaryStorage_is_qcow2() {
+    local imageType=$(qemu-img info "${primaryStorage}" | awk '/file format:/ {print $3}')
+    [[ ${imageType} == qcow2 ]]
+}
+
+set_type_primary_storage_source() {
+    get_primary_storage_source
+    if [[ -z ${primaryStorage} || ${primaryStorage} =~ \.iso ]]; then 
+        storageType=unknown
+    else
+        if [[ ${primaryStorageSourceXmlLine} =~ source.dev= ]]; then
+            if test_primaryStorage_is_lvm; then
+                storageType=lvm
+                read_lvm_config
+            else
+                storageType="raw block"
+            fi
+        else
+            test_primaryStorage_is_qcow2 && storageType=qcow2 || storageType="raw image"
+        fi
+    fi
+}
+
+get_lv_attribute() {
+    # $1 = desired.column.name
+    # $2 = "of"
+    # $3 = lv.column.name=VALUE
+    local c= i=0 j=0
+    for c in ${lvmCfgfileColumnNames//❚/ }; do ((i++)); [[ ${c} == ${1} ]] && break; done
+    c=
+    for c in ${lvmCfgfileColumnNames//❚/ }; do ((j++)); [[ ${c} == ${3%%=*} ]] && break; done
+    awk -F❚ -v desiredColumn="${i}" -v lvColumn="${j}" -v lvColValue="${3#*=}" '
+        BEGIN{ E = 1 }
+        {
+            if (NF == 0 || $1 ~ /^\s*($|#)/)
+                next
+            else {
+                if ($lvColumn == lvColValue) {
+                    if ($desiredColumn != "") {
+                        print $desiredColumn
+                        E = 0
+                    }
+                }
+            }
+        }
+        END{ exit E }
+    ' ${cfgFile}
+}
+
+update_lv_attrs_datetime() {
+    # $1 = lv.id
+    local id=${1}
+    sed -i -r \
+        -e "/^${id}❚/s,(.*❚.*❚.*❚.*❚.*)❚.*❚,\1❚$(date +%F)❚," \
+        -e "/^${id}❚/s,(.*❚.*❚.*❚.*❚.*❚.*)❚.*,\1❚$(date "+%T %z")," ${cfgFile}
+}
+
+lvm_print_children_of_parent() {
+    local parent=${1} indent=${2} count=0 child pre printchild
+    for child in $(get_lv_attribute LV of Origin=${parent}); do
+        ((count++))
+    done
+    for child in $(get_lv_attribute LV of Origin=${parent}); do
+        ((count--))
+        pre= printchild=
+        
+        # FOR DISPLAY ON THIS CHILD'S LINE:
+        if [[ ${count} -eq 0 ]]; then
+            [[ ${indent} =~ │$ ]] && indent=${indent%│}
+            pre="${indent}└"  # No other children
+        else
+            [[ ${indent} =~ │$ ]] && indent=${indent%│}
+            pre="${indent}├"  # At least 1 more child
+        fi
+        
+        # Print child
+        if [[ ${child} == ${primaryStorage##*/} ]]; then
+            printchild="${C}${child}${RESET} $(__arrow)"
+        else
+            printchild="${c}${child}${RESET}"
+        fi
+        printf "${pre}─${printchild}\n"
+        
+        # If child is also a parent:
+        if get_lv_attribute LV of Origin=${parent} >/dev/null; then
+            # What to do with indent for next loop:
+            if [[ ${count} -eq 0 ]]; then
+                # If our parent doesn't have another child:                
+                indent="${indent} "  # FOR NEXT CHILD
+            elif [[ ${count} -ge 1 ]]; then
+                # If our parent has at least 1 more child: 
+                indent="${indent}│"
+            fi
+            # Execute loop with current child as the parent
+            lvm_print_children_of_parent ${child} "${indent}   "
+        fi
+    done
+}
+
+print_domains_lvm_storage() {
+    local topLevelLogvol= vg=
+    for topLevelLogvol in $(get_lv_attribute LV of Origin=""); do
+        vg=$(get_lv_attribute VG of LV=${topLevelLogvol})
+        if [[ ${primaryStorage} == /dev/${vg}/${topLevelLogvol} ]]; then
+            printf "/dev/${vg}/${C}${topLevelLogvol}${RESET} $(__arrow)\n"
+        else
+            printf "/dev/${vg}/${c}${topLevelLogvol}${RESET}\n"
+        fi
+        lvm_print_children_of_parent ${topLevelLogvol} "  " 
+    done
+}
+
+print_domains_qcow_snapshots() {
+    printf "\n❚❚❚  └─$(c)"
+    virsh snapshot-list ${Domain} --tree |
+        sed -n -e "/| *$/ d;1h;1!H
+            $ {x
+            :a
+                s/\(\n[ |]*\)+\([^[:cntrl:]]*\1[|+]\)/\1├\2/;t a
+            :b
+                s/\(\n[ |]*\)+/\1└/;t b
+                s/|/│/g;s/- /─$(c)/g;p
+            }" | 
+                sed \
+                    -e '/^ *$/d'            \
+                    -e '1!s,^,❚❚❚    ,'    \
+                    -e "s,$(virsh snapshot-current ${Domain} --name),$(C)&$(R) $(__arrow),"  \
+                    -e "s,$,$(R),"
+                    #~ -e 's,|,│,g'           \
+                    #~ -e "s,+- ,└─$(c),"     \
+                    #~ -e '/^[ │]*$/d'        
+}
+
+__arrow() { printf "${G}←${RESET}" ; }
+
+_list_dom_state_and_snaps() {
+    # Fun symbols to maybe use
+    # ✔ ← ☀ ☚ ⚑ ◄ ◀ ◉
+    set_type_primary_storage_source
+    case ${storageType} in
+        unknown|raw*)
+            line=" ${Domain} ❚${1}❚${storageType} ❚${primaryStorage} $(__arrow)"
+            ;;
+        lvm)
+            line=" ${Domain} ❚${1}❚lvm ❚"
+            line+=$(print_domains_lvm_storage | sed '1!s/^/❚❚❚/')
+            ;;
+        qcow2)
+            line=" ${Domain} ❚${1}❚qcow2 ❚"
+            line+="${primaryStorage}"
+            if [[ -z $(virsh snapshot-list ${Domain} --name) ]]; then
+                line+=" $(__arrow)"
+            else
+                line+=$(print_domains_qcow_snapshots)
+            fi
+            ;;
+    esac
+    line+="\n❚❚❚\n"
+    printf "${line}"
+}
+
+list_virts_and_snapshots() {
+    {
+        echo -e "❚❚❚\n DOMAIN❚⚡❚STORAGE❚SNAPSHOTS\n❚❚❚"
+        for Domain in $(virsh list --name); do
+            _list_dom_state_and_snaps "◉"
+        done
+        for Domain in $(virsh list --inactive --name); do
+            _list_dom_state_and_snaps "◌"        
+        done
+        echo "❚❚❚"
+    } |
+        column -t -s "❚" -o " │ " |
+            sed  \
+                -e '1 s/│/┬/g' -e '1 s/ /─/g' -e "1 s/^/$(Z)/" -e "1 s/$/──────────────────────────────────────────$(R)/" \
+                -e '3 s/│/┼/g' -e '3 s/ /─/g' -e "3 s/^/$(Z)/" -e "3 s/$/──────────────────────────────────────────$(R)/" \
+                -e '$ s/│/┴/g' -e '$ s/ /─/g' -e "$ s/^/$(Z)/" -e "$ s/$/──────────────────────────────────────────$(R)/" \
+                -e "s/│/$(Z)│$(R)/1" -e "s/│/$(Z)│$(R)/2" -e "s/│/$(Z)│$(R)/3" \
+                -e "s/◉/$(g)&$(R)/" -e "s/◌/$(r)&$(R)/" \
+                -r -e "2 s/ [⚡[:upper:]]*/$(O)&$(R)/g" \
+                   -e "s/^ [[:graph:]]+/$(B)&$(R)/"
+    echo -e "\nKey:"
+    echo -e "  • Each domain's current storage is marked with a green arrow: $(__arrow)"
+    echo -e "  • Storage which is revertable & Deletable is displayed in ${c}cyan${RESET}\n"
+}
+
+list_domain_qcow_embedded_snaps() {
+    [[ -n ${1} ]] && local Domain=${1}
+    {
+        echo -e "❚❚❚\n Name❚Parent❚Date❚Time\n❚❚❚"
+        virsh snapshot-list ${Domain} --parent | 
+            tail -n+3 |
+                awk 'NF!=0 { printf " %s❚%s❚%s❚%s %s\n", $1, $6, $2, $3, $4 }'
+        echo "❚❚❚"
+    } | column -ts❚  -o " │ " |
+        sed  \
+            -e 's/(null)/      /' \
+            -e '1 s/│/┬/g' -e '1 s/ /─/g' -e "1 s/$/──────────────────/" \
+            -e '3 s/│/┼/g' -e '3 s/ /─/g' -e "3 s/$/──────────────────/" \
+            -e '$ s/│/┴/g' -e '$ s/ /─/g' -e "$ s/$/──────────────────/"
+}
+
+list_domain_lvm_storage() {
+    [[ -n ${1} ]] && local Domain=${1}
+    cfgFile=/etc/${pzero}/${Domain}
+    awk -F❚ -v columns="${lvmCfgfileColumnNames}" '
+        BEGIN {
+            OFS="❚"
+            printf "❚❚❚❚❚❚\n %s\n❚❚❚❚❚❚\n", columns
+        }
+        {
+            if (NF == 0 || $1 ~ /^\s*($|#)/)
+                next
+            else {
+                printf " "
+                print
+            }
+        }
+        END {
+            printf "❚❚❚❚❚❚\n"
+        }
+    ' ${cfgFile} | column -ts❚  -o " │ " |
+            sed  \
+                -e '1 s/│/┬/g' -e '1 s/ /─/g' -e "1 s/$/──────────────────/" \
+                -e '3 s/│/┼/g' -e '3 s/ /─/g' -e "3 s/$/──────────────────/" \
+                -e '$ s/│/┴/g' -e '$ s/ /─/g' -e "$ s/$/──────────────────/"
+}
+
+list_snaps() {
+    case ${storageType} in
+        lvm)
+            list_domain_lvm_storage
+            ;;
+        qcow2)
+            list_domain_qcow_embedded_snaps
+            ;;
+        *)
+            Print "Error: ${pzero} does not yet manage ${Domain}'s storage type (${storageType})"
+            exit 64
+    esac
+}
+
+get_next_available_lvm_snapshot_name() {
+    local n=0 origin=${1}
+    while [[ -e ${origin}-snap${n} ]]; do
+        ((n++))
+    done
+    echo ${origin##*/}-snap${n}
+}
+
+get_next_available_lvm_snapshot_id() {
+    local id=0 n
+    for n in $(egrep ^[0-9]+❚ ${cfgFile} | cut -d❚ -f1 | sort -n); do
+        [[ ${n} != ${id} ]] && break || ((id++))
+    done
+    echo ${id}
+}
+
+get_domain_xml() {
+    # Create a temp-file for the guest definition
+    XML=$(mktemp -p /tmp ${pzero}.${Domain}.XXXX)
+    trap "rm ${XML}" EXIT
+    chcon -t virt_etc_rw_t ${XML}
+    # Save guest definition to temp-file
+    virsh dumpxml --inactive ${Domain} >${XML}
+}
+
+switch_domain_storage_to() {
+    if [[ ${storageType} != lvm ]]; then
+        Print "Error: Switching domain storage is currently only supported with LVM"
+        exit 64
+    fi
+    local currentStorage=${primaryStorage} newStorage=${1}
+    [[ -z ${XML} ]] && get_domain_xml
+    if ! egrep -q "source (dev|file)='${currentStorage}'" ${XML}; then
+        currentStorage=${currentStorage##*/} currentStorage=/dev/mapper/${currentStorage//-/--}
+        if ! egrep -q "source (dev|file)='${currentStorage}'" ${XML}; then
+            Print "Error: Domain ${Domain} does not appear to have primary storage ('${primaryStorage}')"
+            exit 64
+        fi
+    fi
+    sed -i -r "/source (dev|file)='${currentStorage//\//\\/}'/s,${currentStorage},${newStorage}," ${XML}
+    [[ ${parallelize} == false ]] && printf "  "
+    virsh undefine ${Domain} | sed '/^$/d'
+    [[ ${parallelize} == false ]] && printf "  "
+    virsh define ${XML} | sed '/^$/d'
+    primaryStorage=${newStorage}
+}
+
+exec_must_succeed() {
+    local msg=${1}
+    shift
+    if ! ${@}; then
+        Print "${msg}"
+        echo "Aborting"
+        exit 64
+    fi
+}
+
+create_new_lvm_snapshot() {
+    local origin=${1} snapshotName=${2} snapshotSize
+    if get_lv_attribute ThinPool of LV=${origin##*/} >/dev/null; then
+        Print "${Domain}: Creating new thin LVM snapshot from thin origin ${origin#/dev/}"
+        exec_must_succeed "Error: Problem creating snapshot ${lvmVolgroup}/${snapshotName}" \
+                          sudo lvm lvcreate --setactivationskip n --snapshot --name ${snapshotName} ${origin}
+    else
+        if [[ -n ${snapshotDesiredSize} ]]; then
+            snapshotSize=${snapshotDesiredSize}
+        else
+            snapshotSize=${nonthinSnapshotLvDefaultSize}
+        fi
+        Print "${Domain}: Creating new ${snapshotSize} lvm snapshot from origin ${origin#/dev/}"
+        exec_must_succeed "Error: Problem creating snapshot ${lvmVolgroup}/${snapshotName}" \
+                          sudo lvm lvcreate --snapshot --name ${snapshotName} --size ${snapshotSize} ${origin}
+    fi
+}
+
+new_snap() {
+    local snapshotDesiredName=${1} snapshotName origin=
+    if [[ ${storageType} =~ raw|unknown ]]; then
+        Print "Error: ${pzero} does not yet manage ${Domain}'s storage type (${storageType})"
+        exit 64
+    fi
+    Print "${Domain}: Must be shut down in order to create new snapshot"
+    wait_for_shutdown ${Domain}
+    case ${storageType} in
+        lvm)
+            if ! get_lv_attribute ThinPool of LV=${primaryStorage##*/} >/dev/null && origin=$(get_lv_attribute Origin of LV=${primaryStorage##*/}); then
+                origin=/dev/${lvmVolgroup}/${origin}
+            else
+                origin=${primaryStorage}
+            fi
+            if [[ -n ${snapshotDesiredName} ]]; then
+                snapshotName=${snapshotDesiredName}
+            else
+                snapshotName=$(get_next_available_lvm_snapshot_name ${origin})
+            fi
+            create_new_lvm_snapshot ${origin} ${snapshotName}
+            ID=$(get_next_available_lvm_snapshot_id) LV=${snapshotName} VG=${lvmVolgroup} \
+                Origin=${origin##*/} ThinPool=$(get_lv_attribute ThinPool of LV=${origin##*/}) \
+                Date=$(date +%F) Time=$(date "+%T %z") \
+                domain_cfgfile_add_lvm_snap
+            Print "${Domain}: Configuring domain to use new snapshot ${lvmVolgroup}/${snapshotName} as primary storage"
+            switch_domain_storage_to /dev/${lvmVolgroup}/${snapshotName}
+            ;;
+        qcow2)
+            Print "${Domain}: Creating new qcow2-based snapshot, tagging it as current"
+            [[ ${parallelize} == false ]] && printf "  "
+            virsh snapshot-create-as ${Domain} ${snapshotDesiredName}
+            ;;
+    esac
+    if [[ ${startDomains} == true ]]; then
+        Print "${Domain}: Starting with pristine snapshot"
+        [[ ${parallelize} == false ]] && printf "  "
+        virsh start ${Domain}
+    fi
+}
+
+revert_snap() {
+    local snapshotName=${1}
+    if [[ ${storageType} == lvm ]]; then
+        if [[ -z ${snapshotName} ]]; then
+            Print "${Domain}: Must be off to recreate current snapshot logvol"
+            wait_for_destroy ${Domain}
+            if origin=$(get_lv_attribute Origin of LV=${primaryStorage##*/}); then
+                origin=/dev/${lvmVolgroup}/${origin}
+            else
+                Print "Error: Domain's primary storage (${primaryStorage#/dev/}) is not a snapshot"
+                exit
+            fi
+            sudo lvm lvremove -f ${primaryStorage}
+            create_new_lvm_snapshot ${origin} ${primaryStorage##*/}
+            update_lv_attrs_datetime $(get_lv_attribute ID of LV=${primaryStorage##*/})
+        else
+            if [[ $(virsh domid ${Domain}) != - ]]; then
+                Print "${Domain}: Must be off to change which logvol is in use"
+                echo "  Do you want to shutdown gracefully or force destroy?" 
+                echo "  (Choose shutdown if you plan to use the current storage again)"
+                read -ep "  s[h]utdown or [d]estroy? > "
+                case "${REPLY}" in
+                    h|H|shutdown)
+                        wait_for_shutdown ${Domain}
+                        ;;
+                    d|D|destroy)
+                        wait_for_destroy ${Domain}
+                        ;;
+                    *)
+                        Print "Error: Improper choice"
+                        exit
+                esac
+            fi
+            Print "${Domain}: Configuring domain to use logvol ${lvmVolgroup}/${snapshotName} as primary storage"
+            switch_domain_storage_to /dev/${lvmVolgroup}/${snapshotName}
+            if [[ ${startDomains} == true ]]; then
+                Print "${Domain}: Starting ..."
+                [[ ${parallelize} == false ]] && printf "  "
+                virsh start ${Domain}
+            fi
+            return
+        fi
+    elif [[ ${storageType} == qcow2 ]]; then
+        if [[ -n ${snapshotName} ]]; then
+            Print "${Domain}: Must be off to switch to another snapshot"
+            wait_for_destroy ${Domain}
+            Print "${Domain}: Switching to newly-reverted snapshot ${snapshotName}"
+            virsh snapshot-revert ${Domain} "${snapshotName}"
+        else
+            Print "${Domain}: Must be off to revert changes to snapshot"
+            wait_for_destroy ${Domain}
+            Print "${Domain}: Reverting changes to current snapshot"
+            virsh snapshot-revert ${Domain} --current
+        fi
+    else
+        Print "${Domain}: Error: 'revert' command does not yet support storage type '${storageType}'"
+        exit 64
+    fi
+    if [[ ${startDomains} == true ]]; then
+        Print "${Domain}: Starting with pristine snapshot"
+        [[ ${parallelize} == false ]] && printf "  "
+        virsh start ${Domain}
+    fi
+}
+
+delete_snap() {
+    case ${storageType} in
+        lvm)
+            if [[ ${primaryStorage} == /dev/${lvmVolgroup}/${1} ]]; then
+                Print "Error: Cannot delete current storage for domain ${Domain}"
+                echo "You must switch to alternate storage first"
+                exit
+            fi
+            Print "About to remove storage /dev/${lvmVolgroup}/${1} from domain ${Domain}"
+            Prompt "  Continue?" || return
+            sudo lvm lvremove -f /dev/${lvmVolgroup}/${1}
+            storageName=${1} remove_stale_lvm_storage_from_config
+            ;;
+        qcow2)
+            if [[ $(virsh snapshot-current ${Domain} --name) == ${1} ]]; then
+                Print "Warning: It's usually not a good idea to delete an active snapshot" r
+                Print "Recommendation: If possible, revert to another snapshot first" r
+            fi
+            Print "About to remove snapshot ${1} from domain ${Domain}"
+            Prompt "  Continue?" || return
+            virsh snapshot-delete ${Domain} "${1}"
+            ;;
+        *)
+            Print "Error: ${pzero} does not yet manage ${Domain}'s storage type (${storageType})"
+            exit 64
+    esac
+}
+
+nuke_domain() {
+    Print "About to UNDEFINE domain ${Domain} and DELETE all of its storage"
+    Print "THIS OPERATION CANNOT BE UNDONE!"
+    sleep 2
+    Prompt "  Continue?" || return
+    wait_for_destroy "${Domain}"
+    virsh undefine --snapshots-metadata --remove-all-storage "${Domain}"
+}
+
+# add_disk() {
+#     qemu-img create -f qcow2 -o preallocation=metadata /var/lib/mkvm/images/four 1G
+#     
+# }
+
+add_nic() {
+    desiredTypeSource=${1}
+    if [[ -z ${desiredTypeSource} ]]; then
+        netType=network
+        netSource=default
+    else
+        netType=${desiredTypeSource%%=*}
+        netSource=${desiredTypeSource#*=}
+    fi
+    if ! virsh attach-interface "${Domain}" --type ${netType} --source ${netSource} --model virtio --persistent 2>/dev/null
+        virsh attach-interface "${Domain}" --type ${netType} --source ${netSource} --persistent 2>/dev/null
+    fi
+}
+
+case_thru_args() {
+    case ${1} in
+        -bg)  parallelize=true ;;
+          *)  parallelize=false ;;
+    esac
+    shift
+    [[ ${allDomains} == true ]] && case "${1}" in
+        # This hasn't been done yet if -a/--all was used
+        new-snap|n|revert-snap|r|Delete-snap|D) set_type_primary_storage_source
+    esac
+    case "${1}" in
+        new-snap|n)
+            new_snap "${2}"
+            ;;
+        revert-snap|r)
+            revert_snap "${2}"
+            ;;
+        Delete-snap|D)
+            delete_snap "${2}"
+            ;;
+        start|s)
+            virsh start "${Domain}"
+            ;;
+        shutdown|h)
+            virsh shutdown "${Domain}"
+            ;;
+        destroy|d)
+            virsh destroy "${Domain}"
+            ;;
+        console|c)
+            exec virsh console "${Domain}"
+            ;;
+        NUKE|K)
+            nuke_domain "${Domain}"
+            ;;
+        add-nic)
+            add_nic "${2}"
+            ;;
+        *)
+            Print "Error: improper argument '${1}'"
+            echo
+            show_usage +note
+            exit 64
+    esac
+}
+
+cleanup_bg_jobs() {
+    ((numTimesTrapTriggered++))
+    if [[ ${numTimesTrapTriggered} -eq 1 ]]; then
+        echo
+        Print "${pzero}: Background jobs still running"
+        echo "  Hit Ctrl-c again to cancel all bg jobs & quit"
+        sleep 1d
+    else
+        echo
+        Print "${pzero}: Aborting background jobs"
+        pkill --pgroup 0
+    fi
+}
+
+test_domain_storage_exists() {
+    case ${storageType} in
+        lvm)
+            [[ -e /dev/${lvmVolgroup}/${storageName} ]] && return
+            ;;
+        qcow2)
+            virsh snapshot-list "${Domain}" --name | grep -q "^${storageName}$" && return
+    esac
+    return 1
+}
+
+remove_stale_lvm_storage_from_config() {
+    [[ ${storageType} == lvm ]] || return
+    local id=
+    if id=$(get_lv_attribute ID of LV=${storageName}); then
+        sed -i "/^${id}❚/d" ${cfgFile}
+        echo "Notice: Removed non-existent '/dev/${lvmVolgroup}/${storageName}' from domain config" >&2
+    fi
+}
+
+sanity_check_args() {
+    if [[ $(id -u) == 0 ]] || groups | grep -q '\<libvirt\>'; then
+        [[ -z $LIBVIRT_DEFAULT_URI ]] && export LIBVIRT_DEFAULT_URI=qemu:///system
+    else
+        Print "Error: Not root; need to be a member of 'libvirt' group"
+        Print "Consdier running as root:"
+        Print "  usermod -aG libvirt $USER"
+        exit 77
+    fi
+    if [[ -n ${snapshotDesiredSize} ]] && [[ ${2} != new && ${2} != n ]]; then
+        Print "Error: --size can only be used with 'new' command"
+        exit 64
+    elif [[ -z ${1} ]]; then
+        list_virts_and_snapshots
+        exit
+    elif [[ ${allDomains} == true ]]; then
+        case "${1}" in
+            NUKE|K)
+                Print "Error: 'NUKE' command not compatible with --all"
+                exit 64
+                ;;
+            console|c)
+                Print "Error: 'console' command not compatible with --all"
+                exit 64
+                ;;
+            Delete-snap|D)
+                Print "Error: 'Delete-snap' command not compatible with --all"
+                exit 64
+                ;;
+            revert-snap|r)
+                if [[ -n ${2} ]]; then
+                    Print "Error: Specifying snapshot name with 'revert-snap' command not allowed with --all"
+                    exit 64
+                fi
+                ;;
+            new-snap|n)
+                if [[ -n ${2} ]]; then
+                    Print "Error: Specifying snapshot name with 'new-snap' command not allowed with --all"
+                    exit 64
+                fi
+                ;;
+            start|s|shutdown|h|destroy|d)
+                :
+                ;;
+            *)
+                if [[ -n ${1} ]]; then
+                    Print "Error: Improper argument '${1}'"
+                    echo
+                    show_usage +note
+                    exit 64
+                fi
+        esac
+        return
+    elif ! virsh list --all --name | grep -q "^${1}$"; then
+        Print "Error: DOMAIN '${1}' not recognized"
+        echo "Available domains:"
+        virsh list --all --name | sed -e /^$/d -e 's/^/  • /' 
+        exit 64
+    elif [[ -z ${2} ]]; then
+        Domain=${1}
+        set_type_primary_storage_source
+        list_snaps
+        exit
+    elif [[ -z ${3} ]] && [[ ${2} == Delete || ${2} == D ]]; then
+        Print "Error: Must specify snapshot name to delete"
+        exit 64
+    fi
+    
+    case "${2}" in
+        NUKE|K|new-snap|n|revert-snap|r|Delete-snap|D|start|s|shutdown|h|destroy|d|console|c)
+            : ;;
+        *)
+            Print "Error: Improper command '${2}'"
+            echo
+            show_usage +note
+            exit 64
+    esac
+    
+    [[ -n ${3} ]] && case "${2}" in
+        NUKE|K|revert-snap|r|Delete-snap|D|new-snap|n)  : ;;
+        *)
+            Print "Error: Improper argument '${3}'"
+            echo
+            show_usage +note
+            exit 64
+    esac
+    
+    # Don't need to do unnecessary introspection if a simple start/shutdown/destroy/console was specified
+    case "${2}" in
+        NUKE|K|new-snap|n|revert-snap|r|Delete-snap|D)  : ;;
+        *)  return
+    esac
+    
+    Domain=${1}
+    set_type_primary_storage_source
+        
+    case "${2}" in
+        new-snap|n)
+            if [[ -n ${3} ]] && storageName=${3} test_domain_storage_exists; then
+                Print "Error: Cannot use desired new snapshot name '${3}' because it already exists"
+                exit 64
+            fi
+            ;;
+        revert-snap|r|Delete-snap|D)
+            if [[ -n ${3} ]] && ! storageName=${3} test_domain_storage_exists; then
+                Print "Error: Invalid snapshot/storage name '${3}'"
+                storageName=${3} remove_stale_lvm_storage_from_config
+                echo "Run ${pzero} with no args to see what's available for ${1}"
+                exit 64
+            fi
+    esac
+}
+
+main() {
+    # Parse the cmdline
+    until [[ ${1} == -- ]]; do
+        case "${1}" in
+            --all|-a)
+                shift; allDomains=true ;;
+            --off)
+                shift; startDomains=false ;;
+            -h)
+                shift; show_usage +note; exit ;;
+            --help)
+                shift; show_help; exit ;;
+            --size|-L)
+                snapshotDesiredSize=${2}; shift 2 ;;
+        esac
+    done
+    shift  # (to get rid of the '--')
+    sanity_check_args "${@}"
+    # Make shit happen
+    if [[ ${allDomains} == true ]]; then
+        # If executed as: "$0 --all {new|revert|start|shutdown|destroy}" (with or without --off) ...
+        # Then: kick off jobs in pseudo-parallel
+        trap cleanup_bg_jobs 2
+        for Domain in $(virsh list --all --name); do
+            case_thru_args -bg "${@}" &
+        done
+        wait
+        trap 2
+    else
+        Domain=${1}
+        shift
+        # If NOT run with --all/-a:
+        case_thru_args -fg "${@}"
+    fi
+}
+
+# Check for bad '-' or '--' options
+getopt -Q --name=${pzero} -o ${sOpts} -l ${lOpts} -- "${@}" || { show_usage +note; exit 64; }
+
+# Main thread
+main $(getopt -u --name=${pzero} -o ${sOpts} -l ${lOpts} -- "${@}")
