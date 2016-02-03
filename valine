@@ -135,7 +135,7 @@ show_usage() {
 show_help() {
     show_usage
     echo -e "
-Easy qcow & LVM snapshot management with intelligent tab-completion
+Easy qcow & LVM snapshot mgmt of libvirt guests w/ intelligent tab-completion
 
 ${BOLD}With no arguments:${RESET}
  ┐
@@ -222,7 +222,7 @@ ${BOLD}Managing ALL domains at once with ${pzero}:${RESET}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)
- │Note: Does not work with console or Delete or NUKE commands
+ │Note: Does not work with console or Delete-snap or NUKE commands
  │As above, the --off switch is optional with new-snap and revert-snap
  └──────────────────────────────────────────────────────────────────────────────
  
@@ -770,24 +770,25 @@ nuke_domain() {
     virsh undefine --snapshots-metadata --remove-all-storage "${Domain}"
 }
 
+## Coming soon: subcommands to add nics, disks, tweak ram/cpu
 # add_disk() {
 #     qemu-img create -f qcow2 -o preallocation=metadata /var/lib/mkvm/images/four 1G
 #     
 # }
 
-add_nic() {
-    desiredTypeSource=${1}
-    if [[ -z ${desiredTypeSource} ]]; then
-        netType=network
-        netSource=default
-    else
-        netType=${desiredTypeSource%%=*}
-        netSource=${desiredTypeSource#*=}
-    fi
-    if ! virsh attach-interface "${Domain}" --type ${netType} --source ${netSource} --model virtio --persistent 2>/dev/null
-        virsh attach-interface "${Domain}" --type ${netType} --source ${netSource} --persistent 2>/dev/null
-    fi
-}
+# add_nic() {
+#     desiredTypeSource=${1}
+#     if [[ -z ${desiredTypeSource} ]]; then
+#         netType=network
+#         netSource=default
+#     else
+#         netType=${desiredTypeSource%%=*}
+#         netSource=${desiredTypeSource#*=}
+#     fi
+#     if ! virsh attach-interface "${Domain}" --type ${netType} --source ${netSource} --model virtio --persistent 2>/dev/null; then
+#         virsh attach-interface "${Domain}" --type ${netType} --source ${netSource} --persistent 2>/dev/null
+#     fi
+# }
 
 case_thru_args() {
     case ${1} in
@@ -824,9 +825,9 @@ case_thru_args() {
         NUKE|K)
             nuke_domain "${Domain}"
             ;;
-        add-nic)
-            add_nic "${2}"
-            ;;
+        # add-nic)
+        #     add_nic "${2}"
+        #     ;;
         *)
             Print "Error: improper argument '${1}'"
             echo
