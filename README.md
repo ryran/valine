@@ -22,7 +22,8 @@ Usage: valine
        valine DOMAIN {start|Shutdown|Hard-reboot|hibernate|destroy|NUKE}
        valine DOMAIN {console|loop-ssh}
        valine DOMAIN Change-media [/path/to/iso]
-       valine --all {new-snap|revert-snap|start|Shutdown|hibernate|destroy}
+       valine --all {new-snap|revert-snap|start|Shutdown|Hard-reboot|
+                     hibernate|destroy}
 
 Easy qcow & LVM snapshot mgmt of libvirt guests w/ intelligent tab-completion
 
@@ -139,7 +140,7 @@ Making changes to domains with valine:
 Managing ALL domains at once with valine:
  ┐  
  │valine --all {n|new-snap} | {r|revert-snap} | {s|start} | {S|Shutdown} |
- │               {h|hibernate} | {d|destroy}
+ │             {H|Hard-reboot} | {h|hibernate} | {d|destroy}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)

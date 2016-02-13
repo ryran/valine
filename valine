@@ -275,7 +275,7 @@ ${BOLD}Making changes to domains with ${pzero}:${RESET}
 ${BOLD}Managing ALL domains at once with ${pzero}:${RESET}
  ┐  
  │${BOLD}${pzero} --all {n|new-snap} | {r|revert-snap} | {s|start} | {S|Shutdown} |${RESET}
- │               ${BOLD}{H|Hard-reboot} | {h|hibernate} | {d|destroy}${RESET}
+ │             ${BOLD}{H|Hard-reboot} | {h|hibernate} | {d|destroy}${RESET}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)
