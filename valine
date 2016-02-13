@@ -1,5 +1,5 @@
 #!/bin/bash
-# valine v0.6.3 last mod 2016/02/03
+# valine v0.7.0 last mod 2016/02/13
 # Latest version at <https://github.com/ryran/valine>
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 #
@@ -71,6 +71,28 @@ Prompt() {
     fi
 }
 
+Loop() {
+    local interval lasttime
+    if [[ ${#} -eq 0 || ${1} = --help || ${1} = -h || ${1} = -\? ]]; then
+        echo "Usage: Loop [-N] COMMAND"
+        echo "Runs COMMAND [waiting N sec between failed attempts] until it succeeds"
+        echo "If wait interval N is not specified, it defaults to 2 sec"
+    else
+        [[ ${1#-} -gt 0 ]] && { interval=${1#-}; shift; } || interval=2
+        lasttime=$(date +%s)
+        until ${@}; do
+            if [[ $(date +%s) -gt $((lasttime+interval+120)) ]]; then
+                echo "${pzero}: ${1} command just exited with non-zero status; however, since it's been"
+                echo "        more than 2 mins since initial success, we broke the loop"
+                break
+            else
+                lasttime=$(date +%s)
+            fi
+            sleep ${interval}
+        done
+    fi
+}
+
 wait_for_domid_turn_to_dash() {
     local count=0
     [[ ${parallelize} == false ]] && local printProgress="printf ."
@@ -123,13 +145,15 @@ wait_for_destroy() {
 
 show_usage() {
     echo -e "${BOLD}Usage: ${pzero}
-       ${pzero} DOMAIN
-       ${pzero} DOMAIN new-snap [SNAP] [--off] [--size LVSIZE]
-       ${pzero} DOMAIN revert-snap [SNAP] [--off]
-       ${pzero} DOMAIN Delete-snap SNAP
-       ${pzero} DOMAIN {start|shutdown|destroy|console|NUKE}
-       ${pzero} --all {new-snap|revert-snap|start|shutdown|destroy}${RESET}"
-    [[ ${1} == +note ]] && echo -e "\nRun ${pzero} --help for full help page"
+       ${BOLD}${pzero} DOMAIN
+       ${BOLD}${pzero} DOMAIN new-snap [SNAP] [--off] [--size LVSIZE]
+       ${BOLD}${pzero} DOMAIN revert-snap [SNAP] [--off]
+       ${BOLD}${pzero} DOMAIN Delete-snap SNAP
+       ${BOLD}${pzero} DOMAIN {start|Shutdown|Hard-reboot|hibernate|destroy|NUKE}
+       ${BOLD}${pzero} DOMAIN {console|loop-ssh}
+       ${BOLD}${pzero} DOMAIN Change-media [/path/to/iso]
+       ${BOLD}${pzero} --all {new-snap|revert-snap|start|Shutdown|hibernate|destroy}${RESET}"
+    [[ ${1} == +note ]] && echo -e "\nRun ${BOLD}${pzero} --help${RESET} for full help page"
 }
 
 show_help() {
@@ -137,10 +161,13 @@ show_help() {
     echo -e "
 Easy qcow & LVM snapshot mgmt of libvirt guests w/ intelligent tab-completion
 
-${BOLD}With no arguments:${RESET}
+${BOLD}With no subcommands:${RESET}
  ┐
- │${BOLD}${pzero}${RESET} by itself displays summary of all domains & their storage
- │${BOLD}${pzero} DOMAIN${RESET} with no other args shows details about a particular domain
+ │${BOLD}${pzero}${RESET}
+ │  • Display summary of all domains & their storage (including snapshots)
+ │
+ │${BOLD}${pzero} DOMAIN${RESET}
+ │  • Show virsh dominfo & domblklist along with snapshot details
  └──────────────────────────────────────────────────────────────────────────────
 
 ${BOLD}Snapshotting with ${pzero}:${RESET}
@@ -203,22 +230,51 @@ ${BOLD}Snapshotting with ${pzero}:${RESET}
  │    Virtualization Deployment & Administration Guide @ http://red.ht/1kwfbJs 
  └──────────────────────────────────────────────────────────────────────────────
 
-${BOLD}Starting/stopping/accessing/deleting domains with ${pzero}:${RESET}
+${BOLD}Starting/stopping/saving/deleting domains with ${pzero}:${RESET}
  ┐
- │${BOLD}${pzero} DOMAIN {s|start} | {h|shutdown} | {d|destroy} | {c|console} | {K|NUKE}${RESET}
+ │${BOLD}${pzero} DOMAIN {s|start}${RESET}
  │
- │start, shutdown, destroy, console commands are available as a convenience due
- │to virsh's lack of intelligent BASH tab-completion
- │The NUKE command is equivalent to running:
- │  virsh destroy DOMAIN
- │  virsh undefine --snapshots-metadata --remove-all-storage DOMAIN
+ │${BOLD}${pzero} DOMAIN {S|Shutdown}${RESET}
+ │  • Attempt a graceful shutdown via acpi signaling
+ │
+ │${BOLD}${pzero} DOMAIN {H|Hard-reboot}${RESET}
+ │  • Perform hard power reset (immediate reboot)
+ │
+ │${BOLD}${pzero} DOMAIN {d|destroy}${RESET}
+ │  • Cut the power (immediate shutdown)
+ │
+ │${BOLD}${pzero} DOMAIN {h|hibernate}${RESET}
+ │  • Save RAM to statefile via virsh managedsave DOMAIN
+ │
+ │${BOLD}${pzero} DOMAIN {K|NUKE}${RESET}
+ │  • Completely removes a VM by executing:
+ │      • virsh destroy DOMAIN
+ │      • virsh undefine DOMAIN --snapshots-metadata --remove-all-storage \\
+ │                              --nvram --managed-save
+ └──────────────────────────────────────────────────────────────────────────────
+
+${BOLD}Accessing domains with ${pzero}:${RESET}
+ ┐
+ │${BOLD}${pzero} DOMAIN {c|console}${RESET}
+ │  • Open serial console
+ │
+ │${BOLD}${pzero} DOMAIN {l|loop-ssh}${RESET}
+ │  • Keep trying to ssh to DOMAIN until success
+ │    (Uses 'until ssh DOMAIN; do sleep 2; done' loop)
+ │    This assumes DOMAIN is reachable via DNS or ssh-config
+ └──────────────────────────────────────────────────────────────────────────────
+
+${BOLD}Making changes to domains with ${pzero}:${RESET}
+ ┐
+ │${BOLD}${pzero} DOMAIN {C|Change-media} [/path/to/iso]${RESET}
+ │  • Insert new iso file (requires existing cdrom)
+ │  • If no iso specified, eject existing
  └──────────────────────────────────────────────────────────────────────────────
 
 ${BOLD}Managing ALL domains at once with ${pzero}:${RESET}
  ┐  
- │${BOLD}${pzero} --all [ {n|new-snap} | {r|revert-snap} | {s|start} |
- │               {h|shutdown} | {d|destroy} ]${RESET}
- │
+ │${BOLD}${pzero} --all {n|new-snap} | {r|revert-snap} | {s|start} | {S|Shutdown} |${RESET}
+ │               ${BOLD}{h|hibernate} | {d|destroy}${RESET}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)
@@ -688,9 +744,9 @@ revert_snap() {
                 Print "${Domain}: Must be off to change which logvol is in use"
                 echo "  Do you want to shutdown gracefully or force destroy?" 
                 echo "  (Choose shutdown if you plan to use the current storage again)"
-                read -ep "  s[h]utdown or [d]estroy? > "
+                read -ep "  [S]hutdown or [d]estroy? > "
                 case "${REPLY}" in
-                    h|H|shutdown)
+                    s|S|shutdown)
                         wait_for_shutdown ${Domain}
                         ;;
                     d|D|destroy)
@@ -723,7 +779,7 @@ revert_snap() {
             virsh snapshot-revert ${Domain} --current
         fi
     else
-        Print "${Domain}: Error: 'revert' command does not yet support storage type '${storageType}'"
+        Print "${Domain}: Error: 'revert-snap' command does not yet support storage type '${storageType}'"
         exit 64
     fi
     if [[ ${startDomains} == true ]]; then
@@ -764,10 +820,19 @@ delete_snap() {
 nuke_domain() {
     Print "About to UNDEFINE domain ${Domain} and DELETE all of its storage"
     Print "THIS OPERATION CANNOT BE UNDONE!"
-    sleep 2
     Prompt "  Continue?" || return
     wait_for_destroy "${Domain}"
-    virsh undefine --snapshots-metadata --remove-all-storage "${Domain}"
+    virsh undefine "${Domain}" --snapshots-metadata --remove-all-storage --nvram --managed-save
+}
+
+change_media() {
+    local live=--live
+    [[ $(virsh domid ${Domain}) == - ]] && live=
+    if [[ -n ${1} ]]; then
+        virsh change-media "${Domain}" ${cdromDevice} "${1}" --insert --config ${live}
+    else
+        virsh change-media "${Domain}" ${cdromDevice} --eject --config ${live}
+    fi
 }
 
 ## Coming soon: subcommands to add nics, disks, tweak ram/cpu
@@ -811,19 +876,31 @@ case_thru_args() {
             delete_snap "${2}"
             ;;
         start|s)
-            virsh start "${Domain}"
+            [[ $(virsh domid ${Domain}) == - ]] && virsh start "${Domain}"
             ;;
-        shutdown|h)
-            virsh shutdown "${Domain}"
+        Shutdown|S)
+            [[ $(virsh domid ${Domain}) != - ]] && virsh shutdown "${Domain}"
+            ;;
+        Hard-reboot|H)
+            [[ $(virsh domid ${Domain}) != - ]] && virsh reset "${Domain}"
+            ;;
+        hibernate|h)
+            [[ $(virsh domid ${Domain}) != - ]] && virsh managedsave "${Domain}" ${verbose}
             ;;
         destroy|d)
-            virsh destroy "${Domain}"
+            [[ $(virsh domid ${Domain}) != - ]] && virsh destroy "${Domain}"
             ;;
         console|c)
             exec virsh console "${Domain}"
             ;;
+        loop-ssh|l)
+            Loop ssh "${Domain}"
+            ;;
         NUKE|K)
             nuke_domain "${Domain}"
+            ;;
+        Change-media|C)
+            change_media "${2}"
             ;;
         # add-nic)
         #     add_nic "${2}"
@@ -888,11 +965,19 @@ sanity_check_args() {
     elif [[ ${allDomains} == true ]]; then
         case "${1}" in
             NUKE|K)
-                Print "Error: 'NUKE' command not compatible with --all"
+                Print "Error: 'NUKE' command not allowed with --all"
+                exit 64
+                ;;
+            loop-ssh|l)
+                Print "Error: 'loop-ssh' command not compatible with --all"
                 exit 64
                 ;;
             console|c)
                 Print "Error: 'console' command not compatible with --all"
+                exit 64
+                ;;
+            Change-media|C)
+                Print "Error: 'Change-media' command not compatible with --all"
                 exit 64
                 ;;
             Delete-snap|D)
@@ -911,7 +996,7 @@ sanity_check_args() {
                     exit 64
                 fi
                 ;;
-            start|s|shutdown|h|destroy|d)
+            start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d)
                 :
                 ;;
             *)
@@ -930,6 +1015,8 @@ sanity_check_args() {
         exit 64
     elif [[ -z ${2} ]]; then
         Domain=${1}
+        virsh dominfo "${Domain}"
+        virsh domblklist "${Domain}" --details
         set_type_primary_storage_source
         list_snaps
         exit
@@ -939,7 +1026,7 @@ sanity_check_args() {
     fi
     
     case "${2}" in
-        NUKE|K|new-snap|n|revert-snap|r|Delete-snap|D|start|s|shutdown|h|destroy|d|console|c)
+        new-snap|n|revert-snap|r|Delete-snap|D|start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|K|Change-media|C)
             : ;;
         *)
             Print "Error: Improper command '${2}'"
@@ -949,7 +1036,8 @@ sanity_check_args() {
     esac
     
     [[ -n ${3} ]] && case "${2}" in
-        NUKE|K|revert-snap|r|Delete-snap|D|new-snap|n)  : ;;
+        new-snap|n|revert-snap|r|Delete-snap|D|Change-media|C)
+            : ;;
         *)
             Print "Error: Improper argument '${3}'"
             echo
@@ -957,9 +1045,21 @@ sanity_check_args() {
             exit 64
     esac
     
-    # Don't need to do unnecessary introspection if a simple start/shutdown/destroy/console was specified
     case "${2}" in
-        NUKE|K|new-snap|n|revert-snap|r|Delete-snap|D)  : ;;
+        Change-media|C)
+            local domblklist=$(virsh domblklist "${1}" --details | awk '$2=="cdrom" {printf "%s=%s", $3, $NF}' 2>/dev/null)
+            if [[ -z ${domblklist} ]]; then
+                Print "Error: Domain does not have a cdrom device"
+                exit 64
+            fi
+            cdromDevice=${domblklist%%=*}
+            cdromSource=${domblklist#*=}
+    esac
+    
+    # Don't need to do unnecessary introspection if a simple start/Shutdown/hibernate/destroy/console was specified
+    case "${2}" in
+        new-snap|n|revert-snap|r|Delete-snap|D)
+            : ;;
         *)  return
     esac
     
@@ -994,7 +1094,7 @@ main() {
             -h)
                 shift; show_usage +note; exit ;;
             --help)
-                shift; show_help; exit ;;
+                shift; show_help | less -R; exit ;;
             --size|-L)
                 snapshotDesiredSize=${2}; shift 2 ;;
         esac
@@ -1003,8 +1103,9 @@ main() {
     sanity_check_args "${@}"
     # Make shit happen
     if [[ ${allDomains} == true ]]; then
-        # If executed as: "$0 --all {new|revert|start|shutdown|destroy}" (with or without --off) ...
+        # If executed as: "$0 --all {new-snap|revert-snap|start|Shutdown|Hard-reboot|hibernate|destroy}" (with or without --off) ...
         # Then: kick off jobs in pseudo-parallel
+        verbose=
         trap cleanup_bg_jobs 2
         for Domain in $(virsh list --all --name); do
             case_thru_args -bg "${@}" &
@@ -1012,6 +1113,7 @@ main() {
         wait
         trap 2
     else
+        verbose=--verbose
         Domain=${1}
         shift
         # If NOT run with --all/-a:
