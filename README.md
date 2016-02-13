@@ -19,15 +19,20 @@ Usage: valine
        valine DOMAIN new-snap [SNAP] [--off] [--size LVSIZE]
        valine DOMAIN revert-snap [SNAP] [--off]
        valine DOMAIN Delete-snap SNAP
-       valine DOMAIN {start|shutdown|destroy|console|NUKE}
-       valine --all {new-snap|revert-snap|start|shutdown|destroy}
+       valine DOMAIN {start|Shutdown|Hard-reboot|hibernate|destroy|NUKE}
+       valine DOMAIN {console|loop-ssh}
+       valine DOMAIN Change-media [/path/to/iso]
+       valine --all {new-snap|revert-snap|start|Shutdown|hibernate|destroy}
 
 Easy qcow & LVM snapshot mgmt of libvirt guests w/ intelligent tab-completion
 
-With no arguments:
+With no subcommands:
  ┐
- │valine by itself displays summary of all domains & their storage
- │valine DOMAIN with no other args shows details about a particular domain
+ │valine
+ │  • Display summary of all domains & their storage (including snapshots)
+ │
+ │valine DOMAIN
+ │  • Show virsh dominfo & domblklist along with snapshot details
  └──────────────────────────────────────────────────────────────────────────────
 
 Snapshotting with valine:
@@ -90,22 +95,51 @@ Snapshotting with valine:
  │    Virtualization Deployment & Administration Guide @ http://red.ht/1kwfbJs 
  └──────────────────────────────────────────────────────────────────────────────
 
-Starting/stopping/accessing/deleting domains with valine:
+Starting/stopping/saving/deleting domains with valine:
  ┐
- │valine DOMAIN {s|start} | {h|shutdown} | {d|destroy} | {c|console} | {K|NUKE}
+ │valine DOMAIN {s|start}
  │
- │start, shutdown, destroy, console commands are available as a convenience due
- │to virsh's lack of intelligent BASH tab-completion
- │The NUKE command is equivalent to running:
- │  virsh destroy DOMAIN
- │  virsh undefine --snapshots-metadata --remove-all-storage DOMAIN
+ │valine DOMAIN {S|Shutdown}
+ │  • Attempt a graceful shutdown via acpi signaling
+ │
+ │valine DOMAIN {H|Hard-reboot}
+ │  • Perform hard power reset (immediate reboot)
+ │
+ │valine DOMAIN {d|destroy}
+ │  • Cut the power (immediate shutdown)
+ │
+ │valine DOMAIN {h|hibernate}
+ │  • Save RAM to statefile via virsh managedsave DOMAIN
+ │
+ │valine DOMAIN {K|NUKE}
+ │  • Completely removes a VM by executing:
+ │      • virsh destroy DOMAIN
+ │      • virsh undefine DOMAIN --snapshots-metadata --remove-all-storage \
+ │                              --nvram --managed-save
+ └──────────────────────────────────────────────────────────────────────────────
+
+Accessing domains with valine:
+ ┐
+ │valine DOMAIN {c|console}
+ │  • Open serial console
+ │
+ │valine DOMAIN {l|loop-ssh}
+ │  • Keep trying to ssh to DOMAIN until success
+ │    (Uses 'until ssh DOMAIN; do sleep 2; done' loop)
+ │    This assumes DOMAIN is reachable via DNS or ssh-config
+ └──────────────────────────────────────────────────────────────────────────────
+
+Making changes to domains with valine:
+ ┐
+ │valine DOMAIN {C|Change-media} [/path/to/iso]
+ │  • Insert new iso file (requires existing cdrom)
+ │  • If no iso specified, eject existing
  └──────────────────────────────────────────────────────────────────────────────
 
 Managing ALL domains at once with valine:
  ┐  
- │valine --all [ {n|new-snap} | {r|revert-snap} | {s|start} |
- │               {h|shutdown} | {d|destroy} ]
- │
+ │valine --all {n|new-snap} | {r|revert-snap} | {s|start} | {S|Shutdown} |
+ │               {h|hibernate} | {d|destroy}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)
@@ -113,6 +147,6 @@ Managing ALL domains at once with valine:
  │As above, the --off switch is optional with new-snap and revert-snap
  └──────────────────────────────────────────────────────────────────────────────
  
-Version info: valine v0.6.3 last mod 2016/02/03
+Version info: valine v0.7.0 last mod 2016/02/13
   See <http://github.com/ryran/valine> to report bugs or suggestions
 ```
