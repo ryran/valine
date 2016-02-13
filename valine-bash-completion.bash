@@ -1,7 +1,7 @@
 # This file is part of valine, providing intelligent valine tab-completion for BASH
 # Save it to: /etc/bash_completion.d/
 #
-# Revision date: 2016/02/03 matching up with valine v0.6.2
+# Revision date: 2016/02/13 matching up with valine v0.7.0
 # 
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 # 
@@ -29,6 +29,15 @@ __v_VIRSH() {
     virsh "${@}" 2>/dev/null
 }
 
+__v_dom_is_off() {
+    [[ $(__v_VIRSH domid ${1}) == - ]]
+}
+
+__v_dom_has_cdrom() {
+    [[ -n $(__v_VIRSH domblklist ${1} --details | awk '$2=="cdrom" {print $NF}') ]]
+    return
+}
+
 __v_get_domains() {
     __v_VIRSH list --all --name
 }
@@ -48,7 +57,7 @@ __v_list_snapshots() {
 _valine()  {
   
     # Variables
-    local curr prev prevX2 virtDomains
+    local curr prev prevX2 virtDomains validsubcmds cdromSource
     
     # Wipe out COMPREPLY array
     COMPREPLY=()
@@ -63,11 +72,17 @@ _valine()  {
         v|valine)
             COMPREPLY=( $(compgen -W "-a --all $(__v_get_domains)" -- "${curr}") )
             ;;
-        --help|-h|--size|start|s|shutdown|h|destroy|d|console|c|NUKE|K)
+        --help|-h|--size|start|s|Shutdown|S|H|Hard-reboot|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|K)
             ;;
         --off)
             if [[ ${prevX2} =~ ^n(ew-snap)?$ || ${COMP_WORDS[COMP_CWORD-3]} =~ ^n(ew-snap)?$ ]]; then
                 COMPREPLY=( $(compgen -W "--size" -- "${curr}") )
+            fi
+            ;;
+        Change-media|C)
+            if __v_dom_has_cdrom "${prevX2}"; then
+                compopt -o plusdirs  # Important!
+                COMPREPLY=( $(compgen -f -- "${curr}") )
             fi
             ;;
         new-snap|n)
@@ -94,7 +109,7 @@ _valine()  {
             esac
             ;;
         --all|-a)
-            COMPREPLY=( $(compgen -W "new-snap revert-snap start shutdown destroy" -- "${curr}") )
+            COMPREPLY=( $(compgen -W "new-snap revert-snap start Shutdown Hard-reboot hibernate destroy" -- "${curr}") )
             ;;
         *)
             if [[ ${prevX2} == --size || ${prevX2} =~ ^r(evert-snap)?$ ]]; then
@@ -102,7 +117,15 @@ _valine()  {
             elif [[ ${prevX2} =~ ^n(ew-snap)?$ ]]; then
                 COMPREPLY=( $(compgen -W "--off --size" -- "${curr}") )
             elif __v_get_domains | grep -qs -- "^${prev}$"; then
-                COMPREPLY=( $(compgen -W "new-snap revert-snap Delete-snap start shutdown destroy console NUKE" -- "${curr}") )
+                validsubcmds="new-snap loop-ssh NUKE"
+                [[ -n $(__v_list_snapshots "${prev}") ]] && validsubcmds+=" revert-snap Delete-snap"
+                if __v_dom_is_off "${prev}"; then
+                    validsubcmds+=" start"
+                else
+                    validsubcmds+=" Shutdown Hard-reboot hibernate destroy console"
+                fi
+                __v_dom_has_cdrom "${prev}" && validsubcmds+=" Change-media"
+                COMPREPLY=( $(compgen -W "${validsubcmds}" -- "${curr}") )
             fi
     esac
     return 0
