@@ -112,7 +112,7 @@ Starting/stopping/saving/deleting domains with valine:
  │valine DOMAIN {h|hibernate}
  │  • Save RAM to statefile via virsh managedsave DOMAIN
  │
- │valine DOMAIN {K|NUKE}
+ │valine DOMAIN {N|NUKE}
  │  • Completely removes a VM by executing:
  │      • virsh destroy DOMAIN
  │      • virsh undefine DOMAIN --snapshots-metadata --remove-all-storage \
@@ -148,6 +148,6 @@ Managing ALL domains at once with valine:
  │As above, the --off switch is optional with new-snap and revert-snap
  └──────────────────────────────────────────────────────────────────────────────
  
-Version info: valine v0.7.0 last mod 2016/02/13
+Version info: valine v0.7.1 last mod 2016/02/14
   See <http://github.com/ryran/valine> to report bugs or suggestions
 ```
