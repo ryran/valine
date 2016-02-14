@@ -1,5 +1,5 @@
 #!/bin/bash
-# valine v0.7.0 last mod 2016/02/13
+# valine v0.7.1 last mod 2016/02/14
 # Latest version at <https://github.com/ryran/valine>
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 #
@@ -247,7 +247,7 @@ ${BOLD}Starting/stopping/saving/deleting domains with ${pzero}:${RESET}
  │${BOLD}${pzero} DOMAIN {h|hibernate}${RESET}
  │  • Save RAM to statefile via virsh managedsave DOMAIN
  │
- │${BOLD}${pzero} DOMAIN {K|NUKE}${RESET}
+ │${BOLD}${pzero} DOMAIN {N|NUKE}${RESET}
  │  • Completely removes a VM by executing:
  │      • virsh destroy DOMAIN
  │      • virsh undefine DOMAIN --snapshots-metadata --remove-all-storage \\
@@ -524,7 +524,9 @@ _list_dom_state_and_snaps() {
             fi
             ;;
     esac
-    line+="\n❚❚❚\n"
+    # Got rid of blank lines in valine v0.7.1:
+    #line+="\n❚❚❚\n"
+    line+="\n"
     printf "${line}"
 }
 
@@ -818,11 +820,21 @@ delete_snap() {
     esac
 }
 
+domblklist_cdrom() {
+    virsh domblklist "${1}" --details | awk '$2=="cdrom" {printf "%s=%s\n", $3, $NF; exit}' 2>/dev/null
+}
+
 nuke_domain() {
-    Print "About to UNDEFINE domain ${Domain} and DELETE all of its storage"
+    Print "About to UNDEFINE domain ${Domain} and DELETE all of its attached storage"
     Print "THIS OPERATION CANNOT BE UNDONE!"
     Prompt "  Continue?" || return
     wait_for_destroy "${Domain}"
+    cdrom=$(domblklist_cdrom "${Domain}")
+    if [[ -n ${cdrom} ]]; then
+        cdromDevice=${cdrom%%=*}
+        cdromSource=${cdrom#*=}
+        change_media
+    fi
     virsh undefine "${Domain}" --snapshots-metadata --remove-all-storage --nvram --managed-save
 }
 
@@ -897,7 +909,7 @@ case_thru_args() {
         loop-ssh|l)
             Loop ssh "${Domain}"
             ;;
-        NUKE|K)
+        NUKE|N)
             nuke_domain "${Domain}"
             ;;
         Change-media|C)
@@ -965,7 +977,7 @@ sanity_check_args() {
         exit
     elif [[ ${allDomains} == true ]]; then
         case "${1}" in
-            NUKE|K)
+            NUKE|N)
                 Print "Error: 'NUKE' command not allowed with --all"
                 exit 64
                 ;;
@@ -1027,7 +1039,7 @@ sanity_check_args() {
     fi
     
     case "${2}" in
-        new-snap|n|revert-snap|r|Delete-snap|D|start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|K|Change-media|C)
+        new-snap|n|revert-snap|r|Delete-snap|D|start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|N|Change-media|C)
             : ;;
         *)
             Print "Error: Improper command '${2}'"
@@ -1048,13 +1060,13 @@ sanity_check_args() {
     
     case "${2}" in
         Change-media|C)
-            local domblklist=$(virsh domblklist "${1}" --details | awk '$2=="cdrom" {printf "%s=%s", $3, $NF}' 2>/dev/null)
-            if [[ -z ${domblklist} ]]; then
+            local cdrom=$(domblklist_cdrom "${1}")
+            if [[ -z ${cdrom} ]]; then
                 Print "Error: Domain does not have a cdrom device"
                 exit 64
             fi
-            cdromDevice=${domblklist%%=*}
-            cdromSource=${domblklist#*=}
+            cdromDevice=${cdrom%%=*}
+            cdromSource=${cdrom#*=}
     esac
     
     # Don't need to do unnecessary introspection if a simple start/Shutdown/hibernate/destroy/console was specified

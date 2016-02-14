@@ -1,7 +1,7 @@
 # This file is part of valine, providing intelligent valine tab-completion for BASH
 # Save it to: /etc/bash_completion.d/
 #
-# Revision date: 2016/02/13 matching up with valine v0.7.0
+# Revision date: 2016/02/14 matching up with valine v0.7.1
 # 
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 # 
@@ -72,7 +72,7 @@ _valine()  {
         v|valine)
             COMPREPLY=( $(compgen -W "-a --all $(__v_get_domains)" -- "${curr}") )
             ;;
-        --help|-h|--size|start|s|Shutdown|S|H|Hard-reboot|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|K)
+        --help|-h|--size|start|s|Shutdown|S|H|Hard-reboot|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|N)
             ;;
         --off)
             if [[ ${prevX2} =~ ^n(ew-snap)?$ || ${COMP_WORDS[COMP_CWORD-3]} =~ ^n(ew-snap)?$ ]]; then
