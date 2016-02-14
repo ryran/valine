@@ -1,16 +1,24 @@
-# valine
-Easy qcow &amp; LVM snapshot management of libvirt guests with intelligent tab-completion
+# valine - Easy qcow &amp; LVM snapshot management of libvirt guests with intelligent tab-completion
 
-### What?
+## What?
 
-valine basically puts some of the most universally-useful features of virsh
-into the hands of mere mortals like us. Starting, stopping, console-ing, and
-completely deleting guests (along with all their storage) is of course
-possible. On top of that, valine makes it ridiculously easy to create new
-snapshots -- whether qcow or LVM -- and to revert/switch between snapshots.
-It also provides a swanky visual overview of all of your guests and their
-snapshots. All of this is tied together with automagic bash tab-completion.
-For more details, see the extensive help page.
+valine puts some of the most universally-useful features of `virsh` into the hands of mere mortals like us
+
+- Start, shutdown, force-off, hibernate, and console into a guest
+- Create a new qcow or LVM snapshot from a guest's primary storage
+- Instantaneously revert or switch between a guest's snapshots
+- Change the media on a guest's cdrom (or eject it)
+- Completely delete a guest (along with all storage)
+
+Of course the real beauty of all this is that it's tied together with automagic bash tab-completion. Take a look at the following screenshot, noting that `Enter` was only pressed twice (at the very beginning):
+
+![valine screenshot](http://people.redhat.com/rsawhill/valine-demo1.png)
+
+#### What about remote hypervisors? What about RHEV or OpenStack?
+valine uses `virsh` and `qemu-img` (and potentially `lvm`) commands to inspect local virtual machines. I designed this for me and that's my use-case. If there's interest and someone pays me to, I would *happily* port this to python and do the work possible to get it working with remote hypervisors and maybe even RHEV.
+
+
+## Help page
 
 ```
 $ valine --help
