@@ -1,5 +1,5 @@
 #!/bin/bash
-# valine v0.7.1 last mod 2016/02/14
+# valine v0.7.2 last mod 2016/02/24
 # Latest version at <https://github.com/ryran/valine>
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 #
@@ -30,9 +30,9 @@ g='\033[0;32m'    ; g() { printf ${g}; }
 G='\033[1;32m'    ; G() { printf ${G}; }
 b='\033[1;34m'
 B='\033[1;34m'
-o='\033[0;33m'
-O='\033[1;33m'    ; O() { printf ${O}; }
-p='\033[0;35m'
+y='\033[0;33m'    ; y() { printf ${y}; }
+Y='\033[1;33m'    ; Y() { printf ${Y}; }
+p='\033[0;35m'    ; p() { printf ${p}; }
 P='\033[1;35m'    ; P() { printf ${P}; }
 c='\033[0;36m'    ; c() { printf ${c}; }
 C='\033[1;36m'    ; C() { printf ${C}; }
@@ -189,7 +189,7 @@ ${BOLD}Snapshotting with ${pzero}:${RESET}
  │                  • If so, create a new snapshot of its origin
  │                  • If not, create a new snapshot of it
  │      • Redfine DOMAIN xml to use the newly-created snapshot
- │      • Add new snapshot to cfgfile in /etc/${pzero}/
+ │      • Add new snapshot to /var/lib/${pzero}/DOMAIN
  │  • If not --off:
  │      • Starts DOMAIN with new snapshot
  │
@@ -200,7 +200,7 @@ ${BOLD}Snapshotting with ${pzero}:${RESET}
  │          virsh snapshot-revert DOMAIN --current
  │  • If LVM storage:
  │      • Remove current snapshot LV (lvremove) & recreate it from its origin
- │      • Update creation date/time of snapshot in cfgfile (/etc/${pzero}/)
+ │      • Update creation date/time of snapshot in /var/lib/${pzero}/DOMAIN
  │  • If not --off:
  │      • Starts DOMAIN with new snapshot
  │
@@ -211,7 +211,7 @@ ${BOLD}Snapshotting with ${pzero}:${RESET}
  │          virsh snapshot-revert DOMAIN SNAP
  │  • If LVM storage, SNAP should be the LV name [only] of an LVM logvol:
  │      • Prompt for whether to shut down or destroy DOMAIN
- │      • Find SNAP in /etc/${pzero}/DOMAIN & confirm it's available with lvs
+ │      • Find SNAP in /var/lib/${pzero}/DOMAIN & confirm it's available with lvs
  │      • Edit 'source dev' definition in DOMAIN xml to point to SNAP, 
  │        whether it's a snapshot or a normal LVM logvol, using
  │            virsh dumpxml; sed; virsh undefine; virsh define
@@ -225,7 +225,7 @@ ${BOLD}Snapshotting with ${pzero}:${RESET}
  │      • Delete SNAP using: virsh snapshot-delete DOMAIN SNAP
  │  • If LVM storage, SNAP should be the LV name [only] of an LVM logvol:
  │      • Abort with warning if SNAP is the current storage
- │      • Remove current snapshot LV (lvremove) & remove it from cfgfile
+ │      • Remove current snapshot LV (lvremove) & /var/lib/${pzero}/DOMAIN
  │
  │For more on managing snapshots with virsh:
  │    Virtualization Deployment & Administration Guide @ http://red.ht/1kwfbJs 
@@ -292,16 +292,17 @@ get_primary_storage_source() {
     primaryStorage=$(cut -d\' -f2 2>/dev/null <<<"${primaryStorageSourceXmlLine}")
 }
 
-test_primaryStorage_is_lvm() {
-    if ! sudo -l lvm; then
-        Print "Error: Not root and this user doesn't have required sudo access to 'lvm' command"
-        Print "Consdier running as root:"
-        Print "  echo '$USER ALL=(ALL) NOPASSWD: /usr/sbin/lvm' >>/etc/sudoers.d/$USER-lvm"
-        exit 77
+sanitize_lvm_path_primaryStorage() {
+    if [[ ${primaryStorage} =~ ^/dev/mapper/ ]]; then
+        # Turn /dev/mapper/vg-lv into /dev/vg/lv
+        # Sed nonsense is to deal with valid double-dashes in vg or lv names
+        primaryStorage="/dev/$(sed -r -e 's,([^-])-([^-]),\1/\2,' -e 's,--,-,g' <<<"${primaryStorage#/dev/mapper/}")"
     fi
-    local lvPath
-    if lvPath=$(sudo lvm lvs --noheadings -o lv_path "${primaryStorage}" 2>/dev/null | tr -d ' '); then
-        primaryStorage=${lvPath}
+}
+
+test_primaryStorage_is_lvm() {
+    if [[ $(stat -c %t $(readlink -f "${primaryStorage}")) == fd ]]; then
+        sanitize_lvm_path_primaryStorage
         return 0
     else
         return 1
@@ -309,7 +310,12 @@ test_primaryStorage_is_lvm() {
 }
 
 domain_cfgfile_create() {
-    [[ -d ${cfgFile##*/} ]] || mkdir -p ${cfgFile##*/}
+    if [[ ! -d ${cfgFile##*/} ]] && ! mkdir -p ${cfgFile##*/}; then
+        Print "Error: Missing [and unable to create] needed directory '${cfgFile##*/}'" r
+        Print "As root, execute:"
+        Print "  mkdir -m 2775 ${cfgFile##*/}; chgrp libvirt ${cfgFile##*/}"
+        exit 64
+    fi >&2
     cat >${cfgFile} <<EOF
 # Domain:     ${Domain}
 # CfgVersion: ${lvmCfgfileVersion}
@@ -319,7 +325,7 @@ EOF
 }
 
 domain_cfgfile_eval() {
-    if [[ $(awk '/^# CfgVersion:/ {print $3}' ${cfgFile}) != ${lvmCfgfileVersion} ]]; then
+    if [[ $(awk '/^# CfgVersion:/ {print $3}' ${cfgFile} 2>/dev/null) != ${lvmCfgfileVersion} ]]; then
         Print "Warning: ${Domain} config file has improper CfgVersion ('${lvmCfgfileVersion}' expected)" r
         Print "Storage displayed for this domain might not be accurate" r
         Print "If this causes problems, delete ${cfgFile}" r
@@ -336,17 +342,17 @@ domain_cfgfile_add_lvm_snap() {
 chase_add_preexisting_logvols() {
     local id=0 logvol=${1} LVM2_VG_NAME LVM2_LV_NAME LVM2_LV_PATH LVM2_ORIGIN=0 LVM2_POOL_LV 
     while [[ -n ${LVM2_ORIGIN} ]]; do
-        eval $(sudo lvm lvs --nameprefixes --noheadings -o vg_name,lv_name,lv_path,origin,pool_lv ${logvol})
+        eval $(sudo -n lvm lvs --nameprefixes --noheadings -o vg_name,lv_name,lv_path,origin,pool_lv ${logvol})
         ID=${id} LV=${LVM2_LV_NAME} VG=${LVM2_VG_NAME} Origin=${LVM2_ORIGIN} \
             ThinPool=${LVM2_POOL_LV} Date=unknown Time=unknown \
             domain_cfgfile_add_lvm_snap
         ((id++))
-        siblings=$(sudo lvm lvs --noheadings -o vg_name,origin,lv_name ${LVM2_VG_NAME} 2>/dev/null | 
+        siblings=$(sudo -n lvm lvs --noheadings -o vg_name,origin,lv_name ${LVM2_VG_NAME} 2>/dev/null | 
                        awk -v vg="${LVM2_VG_NAME}" -v origin="${LVM2_ORIGIN}" -v lv=${LVM2_LV_NAME} '
                            $1 == vg && $2 == origin && $3 != lv {print $3}'
                  )
         for logvol in ${siblings}; do
-            eval $(sudo lvm lvs --nameprefixes --noheadings -o vg_name,lv_name,lv_path,origin,pool_lv ${LVM2_VG_NAME}/${logvol})
+            eval $(sudo -n lvm lvs --nameprefixes --noheadings -o vg_name,lv_name,lv_path,origin,pool_lv ${LVM2_VG_NAME}/${logvol})
             ID=${id} LV=${LVM2_LV_NAME} VG=${LVM2_VG_NAME} Origin=${LVM2_ORIGIN} \
                 ThinPool=${LVM2_POOL_LV} Date=unknown Time=unknown \
                 domain_cfgfile_add_lvm_snap
@@ -356,11 +362,27 @@ chase_add_preexisting_logvols() {
     done
 }
 
+test_have_sudo_lvm() {
+    if sudo -nl lvm &>/dev/null; then
+        return
+    else
+        case ${1} in
+            inspect) Print "Error: Unable to fully-inspect storage '${primaryStorage}' for domain '${Domain}'" y ;;
+            create)  Print "Error: Unable to create new LVM snapshot for domain '${Domain}'" y ;;
+            revert)  Print "Error: Unable to revert LVM snapshot storage for domain '${Domain}'" y ;;
+            delete)  Print "Error: Unable to delete LVM snapshot storage for domain '${Domain}'" y ;;
+        esac
+        Print "To fix this, run as root:" y
+        Print "  echo '${USER} ALL=(ALL) NOPASSWD: /usr/sbin/lvm' >>/etc/sudoers.d/${pzero}-lvm" y
+        return 1
+    fi >&2
+}
+
 read_lvm_config() {
-    cfgFile=/etc/${pzero}/${Domain}
+    cfgFile=/var/lib/${pzero}/${Domain}
     if [[ -r ${cfgFile} ]]; then
         domain_cfgfile_eval
-    else
+    elif test_have_sudo_lvm inspect; then
         domain_cfgfile_create
         chase_add_preexisting_logvols ${primaryStorage}
         domain_cfgfile_eval
@@ -467,6 +489,10 @@ lvm_print_children_of_parent() {
 }
 
 print_domains_lvm_storage() {
+    if [[ ! -r ${cfgFile} ]]; then
+        printf "${primaryStorage} $(__arrow)\n"
+        return
+    fi
     local topLevelLogvol= vg=
     for topLevelLogvol in $(get_lv_attribute LV of Origin=""); do
         vg=$(get_lv_attribute VG of LV=${topLevelLogvol})
@@ -548,7 +574,7 @@ list_virts_and_snapshots() {
                 -e '$ s/│/┴/g' -e '$ s/ /─/g' -e "$ s/^/$(Z)/" -e "$ s/$/──────────────────────────────────────────$(R)/" \
                 -e "s/│/$(Z)│$(R)/1" -e "s/│/$(Z)│$(R)/2" -e "s/│/$(Z)│$(R)/3" \
                 -e "s/◉/$(g)&$(R)/" -e "s/◌/$(r)&$(R)/" \
-                -r -e "2 s/ [⚡[:upper:]]*/$(O)&$(R)/g" \
+                -r -e "2 s/ [⚡[:upper:]]*/$(Y)&$(R)/g" \
                    -e "s/^ [[:graph:]]+/$(B)&$(R)/"
     echo -e "\nKey:"
     echo -e "  • Each domain's current storage is marked with a green arrow: $(__arrow)"
@@ -573,7 +599,7 @@ list_domain_qcow_embedded_snaps() {
 
 list_domain_lvm_storage() {
     [[ -n ${1} ]] && local Domain=${1}
-    cfgFile=/etc/${pzero}/${Domain}
+    cfgFile=/var/lib/${pzero}/${Domain}
     awk -F❚ -v columns="${lvmCfgfileColumnNames}" '
         BEGIN {
             OFS="❚"
@@ -673,7 +699,7 @@ create_new_lvm_snapshot() {
     if get_lv_attribute ThinPool of LV=${origin##*/} >/dev/null; then
         Print "${Domain}: Creating new thin LVM snapshot from thin origin ${origin#/dev/}"
         exec_must_succeed "Error: Problem creating snapshot ${lvmVolgroup}/${snapshotName}" \
-                          sudo lvm lvcreate --setactivationskip n --snapshot --name ${snapshotName} ${origin}
+                          sudo -n lvm lvcreate --setactivationskip n --snapshot --name ${snapshotName} ${origin}
     else
         if [[ -n ${snapshotDesiredSize} ]]; then
             snapshotSize=${snapshotDesiredSize}
@@ -682,7 +708,7 @@ create_new_lvm_snapshot() {
         fi
         Print "${Domain}: Creating new ${snapshotSize} lvm snapshot from origin ${origin#/dev/}"
         exec_must_succeed "Error: Problem creating snapshot ${lvmVolgroup}/${snapshotName}" \
-                          sudo lvm lvcreate --snapshot --name ${snapshotName} --size ${snapshotSize} ${origin}
+                          sudo -n lvm lvcreate --snapshot --name ${snapshotName} --size ${snapshotSize} ${origin}
     fi
 }
 
@@ -691,6 +717,8 @@ new_snap() {
     if [[ ${storageType} =~ raw|unknown ]]; then
         Print "Error: ${pzero} does not yet manage ${Domain}'s storage type (${storageType})"
         exit 64
+    elif [[ ${storageType} == lvm ]]; then
+        test_have_sudo_lvm create || exit 64
     fi
     Print "${Domain}: Must be shut down in order to create new snapshot"
     wait_for_shutdown ${Domain}
@@ -730,6 +758,7 @@ new_snap() {
 revert_snap() {
     local snapshotName=${1}
     if [[ ${storageType} == lvm ]]; then
+        test_have_sudo_lvm revert || exit 64
         if [[ -z ${snapshotName} ]]; then
             Print "${Domain}: Must be off to recreate current snapshot logvol"
             wait_for_destroy ${Domain}
@@ -739,7 +768,7 @@ revert_snap() {
                 Print "Error: Domain's primary storage (${primaryStorage#/dev/}) is not a snapshot"
                 exit
             fi
-            sudo lvm lvremove -f ${primaryStorage}
+            sudo -n lvm lvremove -f ${primaryStorage}
             create_new_lvm_snapshot ${origin} ${primaryStorage##*/}
             update_lv_attrs_datetime $(get_lv_attribute ID of LV=${primaryStorage##*/})
         else
@@ -795,6 +824,7 @@ revert_snap() {
 delete_snap() {
     case ${storageType} in
         lvm)
+            test_have_sudo_lvm delete || exit 64
             if [[ ${primaryStorage} == /dev/${lvmVolgroup}/${1} ]]; then
                 Print "Error: Cannot delete current storage for domain ${Domain}"
                 echo "You must switch to alternate storage first"
@@ -802,7 +832,7 @@ delete_snap() {
             fi
             Print "About to remove storage /dev/${lvmVolgroup}/${1} from domain ${Domain}"
             Prompt "  Continue?" || return
-            sudo lvm lvremove -f /dev/${lvmVolgroup}/${1}
+            sudo -n lvm lvremove -f /dev/${lvmVolgroup}/${1}
             storageName=${1} remove_stale_lvm_storage_from_config
             ;;
         qcow2)
@@ -833,9 +863,10 @@ nuke_domain() {
     if [[ -n ${cdrom} ]]; then
         cdromDevice=${cdrom%%=*}
         cdromSource=${cdrom#*=}
-        change_media
+        change_media 2>/dev/null
     fi
     virsh undefine "${Domain}" --snapshots-metadata --remove-all-storage --nvram --managed-save
+    rm "${cfgFile}" 2>/dev/null
 }
 
 change_media() {

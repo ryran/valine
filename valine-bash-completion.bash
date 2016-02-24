@@ -1,7 +1,7 @@
 # This file is part of valine, providing intelligent valine tab-completion for BASH
 # Save it to: /etc/bash_completion.d/
 #
-# Revision date: 2016/02/14 matching up with valine v0.7.1
+# Revision date: 2016/02/24 matching up with valine v0.7.2
 # 
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 # 
@@ -43,7 +43,7 @@ __v_get_domains() {
 }
 
 __v_list_snapshots() {
-    local cfgFile=/etc/valine/${1}
+    local cfgFile=/var/lib/valine/${1}
     if [[ -e ${cfgFile} ]]; then
         [[ -r ${cfgFile} ]] || return
         local desiredColumn=$(awk '/^# Columns:/ {print $3}' ${cfgFile} | awk -F❚ '{i = 1; while ($i != "LV") { i++ }; print i}')
