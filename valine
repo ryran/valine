@@ -992,7 +992,9 @@ remove_stale_lvm_storage_from_config() {
 }
 
 sanity_check_args() {
-    if [[ $(id -u) == 0 ]] || groups | grep -q '\<libvirt\>'; then
+    if [[ $(id -u) == 0 ]]; then
+        :
+    elif groups | grep -q '\<libvirt\>'; then
         [[ -z $LIBVIRT_DEFAULT_URI ]] && export LIBVIRT_DEFAULT_URI=qemu:///system
     else
         Print "Error: Not root; need to be a member of 'libvirt' group"
