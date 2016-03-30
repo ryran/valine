@@ -1,5 +1,5 @@
 #!/bin/bash
-# valine v0.7.3 last mod 2016/03/29
+# valine v0.7.4 last mod 2016/03/29
 # Latest version at <https://github.com/ryran/valine>
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 #
@@ -884,7 +884,7 @@ change_media() {
     local live=--live
     [[ $(virsh domid ${Domain}) == - ]] && live=
     if [[ -n ${1} ]]; then
-        virsh change-media "${Domain}" ${cdromDevice} "${1}" --insert --config ${live}
+        virsh change-media "${Domain}" ${cdromDevice} "$(readlink -m "${1}")" --insert --config ${live}
     else
         virsh change-media "${Domain}" ${cdromDevice} --eject --config ${live}
     fi
