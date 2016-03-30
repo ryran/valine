@@ -1,7 +1,7 @@
 # This file is part of valine, providing intelligent valine tab-completion for BASH
 # Save it to: /etc/bash_completion.d/
 #
-# Revision date: 2016/02/24 matching up with valine v0.7.2
+# Revision date: 2016/03/29 matching up with valine v0.7.3
 # 
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 # 
@@ -72,7 +72,7 @@ _valine()  {
         v|valine)
             COMPREPLY=( $(compgen -W "-a --all $(__v_get_domains)" -- "${curr}") )
             ;;
-        --help|-h|--size|start|s|Shutdown|S|H|Hard-reboot|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|N)
+        --help|-h|--size|start|s|Shutdown|S|H|Hard-reboot|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|N|set-maxmem|set-mem)
             ;;
         --off)
             if [[ ${prevX2} =~ ^n(ew-snap)?$ || ${COMP_WORDS[COMP_CWORD-3]} =~ ^n(ew-snap)?$ ]]; then
@@ -117,7 +117,7 @@ _valine()  {
             elif [[ ${prevX2} =~ ^n(ew-snap)?$ ]]; then
                 COMPREPLY=( $(compgen -W "--off --size" -- "${curr}") )
             elif __v_get_domains | grep -qs -- "^${prev}$"; then
-                validsubcmds="new-snap loop-ssh NUKE"
+                validsubcmds="new-snap loop-ssh NUKE set-maxmem set-mem"
                 [[ -n $(__v_list_snapshots "${prev}") ]] && validsubcmds+=" revert-snap Delete-snap"
                 if __v_dom_is_off "${prev}"; then
                     validsubcmds+=" start"
