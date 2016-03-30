@@ -30,6 +30,7 @@ Usage: valine
        valine DOMAIN {start|Shutdown|Hard-reboot|hibernate|destroy|NUKE}
        valine DOMAIN {console|loop-ssh}
        valine DOMAIN Change-media [/path/to/iso]
+       valine DOMAIN {set-maxmem|set-mem} SIZE[k|M|G|T]
        valine --all {new-snap|revert-snap|start|Shutdown|Hard-reboot|
                      hibernate|destroy}
 
@@ -143,19 +144,29 @@ Making changes to domains with valine:
  │valine DOMAIN {C|Change-media} [/path/to/iso]
  │  • Insert new iso file (requires existing cdrom)
  │  • If no iso specified, eject existing
+ │
+ │valine DOMAIN set-maxmem SIZE[k|M|G|T]
+ │  • Change the maximum memory allocation limit for DOMAIN
+ │  • Changes to this setting only take effect after DOMAIN is powered off
+ │  • SIZE suffix defaults to 'k' (i.e., kibibytes)
+ │
+ │valine DOMAIN set-mem SIZE[k|M|G|T]
+ │  • Change the current memory allocation limit for DOMAIN
+ │  • Changes to this setting take effect immediately
+ │  • SIZE suffix defaults to 'k' (i.e., kibibytes)
  └──────────────────────────────────────────────────────────────────────────────
 
 Managing ALL domains at once with valine:
- ┐  
+ ┐
  │valine --all {n|new-snap} | {r|revert-snap} | {s|start} | {S|Shutdown} |
  │             {H|Hard-reboot} | {h|hibernate} | {d|destroy}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)
- │Note: Does not work with console or Delete-snap or NUKE commands
+ │Note: Does not work with cmds: console, Delete-snap, NUKE, set-maxmem, set-mem
  │As above, the --off switch is optional with new-snap and revert-snap
  └──────────────────────────────────────────────────────────────────────────────
- 
-Version info: valine v0.7.1 last mod 2016/02/14
+
+Version info: valine v0.7.4 last mod 2016/03/29
   See <http://github.com/ryran/valine> to report bugs or suggestions
 ```
