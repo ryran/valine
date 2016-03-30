@@ -1,5 +1,5 @@
 #!/bin/bash
-# valine v0.7.2 last mod 2016/02/24
+# valine v0.7.3 last mod 2016/03/29
 # Latest version at <https://github.com/ryran/valine>
 # Copyright 2014, 2016 Ryan Sawhill Aroha <rsaw@redhat.com>
 #
@@ -152,6 +152,7 @@ show_usage() {
        ${BOLD}${pzero} DOMAIN {start|Shutdown|Hard-reboot|hibernate|destroy|NUKE}
        ${BOLD}${pzero} DOMAIN {console|loop-ssh}
        ${BOLD}${pzero} DOMAIN Change-media [/path/to/iso]
+       ${BOLD}${pzero} DOMAIN {set-maxmem|set-mem} SIZE[k|M|G|T]
        ${BOLD}${pzero} --all {new-snap|revert-snap|start|Shutdown|Hard-reboot|
                      ${BOLD}hibernate|destroy}${RESET}"
     [[ ${1} == +note ]] && echo -e "\nRun ${BOLD}${pzero} --help${RESET} for full help page"
@@ -270,19 +271,29 @@ ${BOLD}Making changes to domains with ${pzero}:${RESET}
  │${BOLD}${pzero} DOMAIN {C|Change-media} [/path/to/iso]${RESET}
  │  • Insert new iso file (requires existing cdrom)
  │  • If no iso specified, eject existing
+ │
+ │${BOLD}${pzero} DOMAIN set-maxmem SIZE[k|M|G|T]${RESET}
+ │  • Change the maximum memory allocation limit for DOMAIN
+ │  • Changes to this setting only take effect after DOMAIN is powered off
+ │  • SIZE suffix defaults to 'k' (i.e., kibibytes)
+ │
+ │${BOLD}${pzero} DOMAIN set-mem SIZE[k|M|G|T]${RESET}
+ │  • Change the current memory allocation limit for DOMAIN
+ │  • Changes to this setting take effect immediately
+ │  • SIZE suffix defaults to 'k' (i.e., kibibytes)
  └──────────────────────────────────────────────────────────────────────────────
 
 ${BOLD}Managing ALL domains at once with ${pzero}:${RESET}
- ┐  
+ ┐
  │${BOLD}${pzero} --all {n|new-snap} | {r|revert-snap} | {s|start} | {S|Shutdown} |${RESET}
  │             ${BOLD}{H|Hard-reboot} | {h|hibernate} | {d|destroy}${RESET}
  │Replace DOMAIN with '--all' (or '-a') to operate on all detected domains in
  │parallel (jobs are backgrounded, verbose output is lessened, and cancelling
  │requires double Ctrl-c)
- │Note: Does not work with console or Delete-snap or NUKE commands
+ │Note: Does not work with cmds: console, Delete-snap, NUKE, set-maxmem, set-mem
  │As above, the --off switch is optional with new-snap and revert-snap
  └──────────────────────────────────────────────────────────────────────────────
- 
+
 ${BOLD}Version info: ${version:2}${RESET}
   See <http://github.com/ryran/valine> to report bugs or suggestions"
 }
@@ -946,6 +957,19 @@ case_thru_args() {
         Change-media|C)
             change_media "${2}"
             ;;
+        set-maxmem)
+            [[ $(virsh domid ${Domain}) != - ]] && Print "${Domain}: Must be powered off completely to see maxmem change"
+            virsh setmaxmem "${Domain}" "${2}" --config
+            virsh dominfo "${Domain}" | grep memory:
+            ;;
+        set-mem)
+            if [[ $(virsh domid ${Domain}) == - ]]; then
+                virsh setmem "${Domain}" "${2}" --config
+            else
+                virsh setmem "${Domain}" "${2}" --config --live
+            fi
+            virsh dominfo "${Domain}" | grep memory:
+            ;;
         # add-nic)
         #     add_nic "${2}"
         #     ;;
@@ -1042,6 +1066,10 @@ sanity_check_args() {
                     exit 64
                 fi
                 ;;
+            set-maxmem|set-mem)
+                Print "Error: '${1}' command not allowed with --all"
+                exit 64
+                ;;
             start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d)
                 :
                 ;;
@@ -1057,7 +1085,7 @@ sanity_check_args() {
     elif ! virsh list --all --name | grep -q "^${1}$"; then
         Print "Error: DOMAIN '${1}' not recognized"
         echo "Available domains:"
-        virsh list --all --name | sed -e /^$/d -e 's/^/  • /' 
+        virsh list --all --name | sed -e /^$/d -e 's/^/  • /'
         exit 64
     elif [[ -z ${2} ]]; then
         Domain=${1}
@@ -1066,13 +1094,18 @@ sanity_check_args() {
         set_type_primary_storage_source
         list_snaps
         exit
-    elif [[ -z ${3} ]] && [[ ${2} == Delete || ${2} == D ]]; then
-        Print "Error: Must specify snapshot name to delete"
+    elif [[ $2 =~ ^(Delete|D|set-maxmem|set-mem)$ && -z ${3} ]]; then
+        case ${2} in
+            Delete|D)
+                Print "Error: Must specify snapshot name to delete" ;;
+            set-maxmem|set-mem)
+                Print "Error: Must specify memory size as a number with optional size suffix" ;;
+        esac
         exit 64
     fi
     
     case "${2}" in
-        new-snap|n|revert-snap|r|Delete-snap|D|start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|N|Change-media|C)
+        new-snap|n|revert-snap|r|Delete-snap|D|start|s|Shutdown|S|Hard-reboot|H|hibernate|h|destroy|d|console|c|loop-ssh|l|NUKE|N|Change-media|C|set-maxmem|set-mem)
             : ;;
         *)
             Print "Error: Improper command '${2}'"
@@ -1082,7 +1115,7 @@ sanity_check_args() {
     esac
     
     [[ -n ${3} ]] && case "${2}" in
-        new-snap|n|revert-snap|r|Delete-snap|D|Change-media|C)
+        new-snap|n|revert-snap|r|Delete-snap|D|Change-media|C|set-maxmem|set-mem)
             : ;;
         *)
             Print "Error: Improper argument '${3}'"
