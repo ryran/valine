@@ -1022,7 +1022,7 @@ sanity_check_args() {
         [[ -z $LIBVIRT_DEFAULT_URI ]] && export LIBVIRT_DEFAULT_URI=qemu:///system
     else
         Print "Error: Not root; need to be a member of 'libvirt' group"
-        Print "Consdier running as root:"
+        Print "Consider running as root:"
         Print "  usermod -aG libvirt $USER"
         exit 77
     fi
