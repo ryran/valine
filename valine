@@ -321,10 +321,10 @@ test_primaryStorage_is_lvm() {
 }
 
 domain_cfgfile_create() {
-    if [[ ! -d ${cfgFile##*/} ]] && ! mkdir -p ${cfgFile##*/}; then
-        Print "Error: Missing [and unable to create] needed directory '${cfgFile##*/}'" r
+    if [[ ! -d ${cfgFile%/*} ]] && ! mkdir -p ${cfgFile%/*}; then
+        Print "Error: Missing [and unable to create] needed directory '${cfgFile%/*}'" r
         Print "As root, execute:"
-        Print "  mkdir -m 2775 ${cfgFile##*/}; chgrp libvirt ${cfgFile##*/}"
+        Print "  mkdir -m 2775 ${cfgFile%/*}; chgrp libvirt ${cfgFile%/*}"
         exit 64
     fi >&2
     cat >${cfgFile} <<EOF
